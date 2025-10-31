@@ -1,0 +1,6 @@
+../Core/Src/main.c:505:6:analog_trigger_conversion	8	static
+../Core/Src/main.c:225:6:SystemClock_Config	128	static
+../Core/Src/main.c:104:5:main	104	static,ignoring_inline_asm
+../Core/Src/main.c:435:1:__io_putchar	16	static
+../Core/Src/main.c:481:6:HAL_ADC_ConvCpltCallback	8	static
+../Core/Src/main.c:636:6:Error_Handler	0	static

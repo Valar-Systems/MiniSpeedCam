@@ -1,0 +1,2 @@
+../Drivers/CMSIS/DSP/TransformFunctions/arm_rfft_fast_init_f32.c:201:19:arm_rfft_1024_fast_init_f32	3
+../Drivers/CMSIS/DSP/TransformFunctions/arm_rfft_fast_init_f32.c:292:12:arm_rfft_fast_init_f32	3

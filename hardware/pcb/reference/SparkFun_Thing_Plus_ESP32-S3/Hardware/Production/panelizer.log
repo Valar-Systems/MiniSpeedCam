@@ -1,0 +1,12 @@
+2024-01-23 14:14:53,634 - panelizer_logger - INFO - Running Panelizer
+2024-01-23 14:14:53,637 - panelizer_logger - INFO - ['--panelx', '101.600000', '--panely', '203.200000', '--smaller', '--vscorelayer', 'User.Comments', '--vscoretextlayer', 'User.Comments', '--gapx', '0.000000', '--gapy', '3.810000', '--hrail', '6.35', '--vrail', '6.35', '--fiducialslr']
+2024-01-23 14:14:53,639 - panelizer_logger - INFO - PANELIZER START: 2024-01-23T14:14:53.639799
+2024-01-23 14:14:56,476 - panelizer_logger - INFO - 
+START: 2024-01-23T14:14:53.639799
+Board saved by user.
+
+Board: C:\Users\nathan.seidle\Dropbox\Projects\SparkFun_Thing_Plus_ESP32-S3\Hardware\Production\SparkFun_Thing_Plus_ESP32-S3_panelized.kicad_pcb
+Board dimensions: 22.86 x 58.42 mm.
+You can fit 4 x 3 boards on the panel.
+
+2024-01-23 14:14:56,489 - panelizer_logger - INFO - Panelizer complete

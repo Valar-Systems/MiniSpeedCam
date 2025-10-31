@@ -1,0 +1,29 @@
+Drill report for SparkFun_Thing_Plus_ESP32-S3_panelized.kicad_pcb
+Created on 1/23/2024 2:15:22 PM
+
+Copper Layer Stackup:
+    =============================================================
+    L1 :  F.Cu                      front
+    L2 :  In1.Cu - GND              in1
+    L3 :  In2.Cu -3V3               in2
+    L4 :  B.Cu                      back
+
+
+Drill file 'SparkFun_Thing_Plus_ESP32-S3_panelized.drl' contains
+    plated through holes:
+    =============================================================
+    T1  0.300mm  0.0118"  (1500 holes)
+    T2  0.305mm  0.0120"  (60 holes)
+    T3  0.600mm  0.0236"  (48 holes)  (with 48 slots)
+    T4  1.016mm  0.0400"  (336 holes)
+
+    Total plated holes count 1944
+
+
+Not plated through holes are merged with plated holes
+    unplated through holes:
+    =============================================================
+    T5  0.650mm  0.0256"  (24 holes)
+    T6  3.302mm  0.1300"  (24 holes)
+
+    Total unplated holes count 48

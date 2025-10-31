@@ -1,0 +1,40 @@
+name: Run mkdocs
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python runtime
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.x
+
+      - name: Install Python dependencies
+        run: pip install mkdocs-monorepo-plugin mkdocs-redirects mkdocs-with-pdf weasyprint mkdocs-git-authors-plugin mkdocs-git-revision-date-localized-plugin mkdocs-git-committers-plugin-2 setuptools
+
+      # - name: Install Chrome
+      #   run: sudo apt install google-chrome-stable
+
+      # - run: pip uninstall -y beautifulsoup4
+      # - run: pip install beautifulsoup4==4.9.3
+
+      - name: Set up build cache
+        uses: actions/cache@v2
+        with:
+          key: ${{ github.ref }}
+          path: .cache
+
+      - name: Install Insiders build
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }} 
+        run: pip install git+https://${GH_TOKEN}@github.com/squidfunk/mkdocs-material-insiders.git
+      - run: mkdocs gh-deploy --force

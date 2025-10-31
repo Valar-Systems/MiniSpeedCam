@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<!-- Adds file-eye icon to view hookup guide as a single page -->
+{% if "single_page.md" %}
+    <a href="/SparkFun_Thing_Plus_ESP32-S3/print_view" title="View Guide as Single-Page" class="md-content__button md-icon">
+        {% include ".icons/material/file-eye-outline.svg" %}
+        <!-- .icons/fontawesome/solid/scroll.svg -->
+    </a>
+{% endif %}
+
+
+{{ super() }}
+{% endblock content %}
