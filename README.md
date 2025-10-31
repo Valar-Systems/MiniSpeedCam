@@ -7,8 +7,10 @@ It can be purchased at [valarsystems.com](https://valarsystems.com/products/mini
 
 Use it to track vehicle speeds on your driveway or street.
 
-<center><img src="/docs/images/front-components.jpg" width="600"></center>
-<center><img src="/docs/images/back-components.jpg" width="600"></center>
+<div style="text-align: center;">
+<img src="/docs/images/front-components.jpg" width="600">
+</div>
+<img src="/docs/images/back-components.jpg" width="600">
 
 The firmware is designed to work with [minispeedcam.com](https://minispeedcam.com/) and requires **absolutely no coding or flashing.** The device works right out of the box.
 
