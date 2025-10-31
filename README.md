@@ -39,7 +39,9 @@ Max distance is about 100ft or 30m
 
 In case you want to reflash your device with other firmware, you may use the stm32loader python module directly :
 
+```
 pip install stm32loader
+```
 
 ... then with the USB connected to the device (as it uses RTS/CTS signals to control the MCU nRESET and BOOT0 pins):
 
