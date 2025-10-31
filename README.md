@@ -43,7 +43,9 @@ pip install stm32loader
 
 ... then with the USB connected to the device (as it uses RTS/CTS signals to control the MCU nRESET and BOOT0 pins):
 
+```
 stm32loader -b 115200 -p com_port -e -w -v -s -f F3 MiniSpeedCam.bin
+```
 
 If uploading fails, you may use the STM32 Flash loader after performing the following toggling sequence:
 
