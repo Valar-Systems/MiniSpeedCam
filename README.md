@@ -51,8 +51,8 @@ stm32loader -b 115200 -p com_port -e -w -v -s -f F3 MiniSpeedCam.bin
 
 If uploading fails, you may use the STM32 Flash loader after performing the following toggling sequence:
 
-Press the R0 button
-Press the B0 button
-Release R0
-Releaae B0
+1. Press the R0 button
+2. Press the B0 button
+3. Release R0
+4. Release B0
 
