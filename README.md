@@ -1,11 +1,9 @@
 # MiniSpeedCam
 
 ## Intro
-The MiniSpeedCam tracks vehicle speeds, takes a photo, and uploads the photo and speed data to a server.
+The MiniSpeedCam tracks vehicle speeds, takes a photo, and uploads the photo and speed data to a server. Use it to track vehicle speeds on your driveway or street.
 
-It can be purchased at [valarsystems.com](https://valarsystems.com/products/minispeedcam).
-
-Use it to track vehicle speeds on your driveway or street.
+**Please sign up on the waitlist at [minispeedcam.com](https://minispeedcam.com/) if you're interested in purchasing one. We have not began manufacturing these yet.**
 
 <div style="text-align: center;">
 <img src="/docs/images/front-components.jpg" width="600">
@@ -30,7 +28,7 @@ This device wouldn't be possible without the help of [Mathieu (aka Limpkin)](htt
 
 A 100Hz frequency from the CDM324 corresponds to 2.3km/h speed. By using a tuning fork, we can trick the radar sensor into picking up a specific speed. Using a tuning fork with a frequency of 2048 Hz should trigger a speed reading of 47.1 kph or 29.3 mph ((2048/100) x 2.3)
 
-Here's a short video showing it in action. Notice the Max Speed reading in the serial monitor:
+[Here's a short video](https://youtu.be/ftSh7Fsy7hw) of the tuning fork in action.
 
 Max distance is about 100ft or 30m
 
