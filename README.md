@@ -3,7 +3,7 @@
 ## Intro
 The MiniSpeedCam tracks vehicle speeds, takes a photo, and uploads the photo and speed data to a server. Use it to track vehicle speeds on your driveway or street.
 
-**Please sign up on the waitlist at [minispeedcam.com](https://minispeedcam.com/) if you're interested in purchasing one. We have not began manufacturing these yet.**
+**Please sign up to the waitlist at [minispeedcam.com](https://minispeedcam.com/) if you're interested in purchasing one. We have not began manufacturing these yet.**
 
 <div style="text-align: center;">
 <img src="/docs/images/front-components.jpg" width="600">
