@@ -32,10 +32,30 @@ A 100Hz frequency from the CDM324 corresponds to 2.3km/h speed. By using a tunin
 
 Max distance is about 100ft or 30m
 
+## How it works
 
-## Reflashing the Device
+The device uses the CDM324 which output a very small voltage, depending on how fast the vehicle is traveling. This voltage is amplified by the aplification circuit and sent to the STM32 for processing. The STM32 uses FFT to determine the speed of the vehicle.
 
-In case you want to reflash your device with other firmware, you may use the stm32loader python module directly :
+The ESP32 handles the speed data, camera, and WiFi. It is connected to the STM32 via UART and polls it for speed data. Once the speed crosses a threshold that you set, the ESP32 takes a photo and sends a POST API call to a server with the data and image encoded in base64. The vehicles maximum speed, image, and date/time are then saved to a server.
+
+
+## Battery operation
+
+The device uses about 200 mA while in full operation, which is very draining on a battery, so it is designed to sleep when possible. The ESP32 will constantly enter sleep mode and shut off power to the camera and WiFi when movement is not detected, thus significantly reducing battery consumption. The CDM324 and STM32 are always on however. Power consumption of the CDM324 has not been determined yet however.
+
+When the CDM324 detects movement, it will wake the ESP32 automatically and the ESP32 will power up the camera and conenct to WiFi very quickly.
+
+## Power source
+
+MiniSpeedCam runs on 5V. There are two USB-C ports and a screw terminal that can be used to supply 5V power. The easiest way to power this device is to use an external battery pack with a USB-C cable and plug it into either USB-C plug.
+
+## Reflashing the device
+
+Flashing the firmware is very simple. The STM32 is programmed in STM32 Cube IDE and the ESP32 is programmed in Arduino IDE.  
+
+#### STM32 flashing
+
+First plug your USB cable into the STM32 USB port. Then use the stm32loader python module directly :
 
 ```
 pip install stm32loader
@@ -53,4 +73,10 @@ If uploading fails, you may use the STM32 Flash loader after performing the foll
 2. Press the B0 button
 3. Release R0
 4. Release B0
+
+#### ESP32 flashing
+
+Open the Arduino sketch in ArduinoIDE. Be sure you have the libraries at the top of the sketch installed. And be sure your upload options are set up according to the image file in the ESP32_firmware folder.
+
+Optional: ArduinoOTA is also included, allowing you to remotely flash the device from the ArduinoIDE. One caveat is the ESP32 goes to sleep after 10 minutes of being powered on. Just cycle the power to it and you'll have 10 minutes to upload your sketch.
 
