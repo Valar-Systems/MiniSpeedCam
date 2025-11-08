@@ -41,9 +41,7 @@ The ESP32 handles the speed data, camera, and WiFi. It is connected to the STM32
 
 ## Battery operation
 
-The device uses about 200 mA while in full operation, which is very draining on a battery, so it is designed to sleep when possible. The ESP32 will constantly enter sleep mode and shut off power to the camera and WiFi when movement is not detected, thus significantly reducing battery consumption. The CDM324 and STM32 are always on however. Power consumption of the CDM324 has not been determined yet however.
-
-When the CDM324 detects movement, it will wake the ESP32 automatically and the ESP32 will power up the camera and conenct to WiFi very quickly.
+The device consumes about 1.10W while in full operation, and about 0.55W while in sleep mode. The radar sensor is always on, thus consuming 0.55W at all time. When movement is detected, the ESP32 wakes up from light sleep mode, turns on the camera, connects to wifi, takes a photo, sends the data, and goes back to sleep. The process takes about 10 seconds from start to finish. Battery life will depend on how many vehicles the sensor picks up, thus determing how often the ESP32 wakes up. The more vehicles on the road, the larger the battery drain will be.
 
 ## Power source
 
