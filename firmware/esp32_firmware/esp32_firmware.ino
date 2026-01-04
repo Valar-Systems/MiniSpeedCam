@@ -90,7 +90,7 @@ void setup() {
   sendLocalIP();
 
   // Put device to sleep after 120 seconds after setup
-  sleep_time = millis() + 120000;
+  sleep_time = millis() + 10000; //120000
   wake_flag = true;
 
   // ignore device measurements for 5 seconds after startup
