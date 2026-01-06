@@ -1,0 +1,3 @@
+../Drivers/CMSIS/DSP/TransformFunctions/arm_rfft_fast_f32.c:310:6:stage_rfft_f32	2
+../Drivers/CMSIS/DSP/TransformFunctions/arm_rfft_fast_f32.c:399:6:merge_rfft_f32	2
+../Drivers/CMSIS/DSP/TransformFunctions/arm_rfft_fast_f32.c:575:6:arm_rfft_fast_f32	2

@@ -1,0 +1,231 @@
+
+site_name: SparkFun Thing Plus - ESP32-S3
+site_description: A hookup guide to get started with the SparkFun Thing Plus - ESP32-S3.
+site_url: https://sparkfun.github.io/SparkFun_Thing_Plus_ESP32-S3
+
+edit_uri: blob/main/docs/
+
+repo_url: https://github.com/sparkfun/SparkFun_Thing_Plus_ESP32-S3
+repo_name: sparkfun//SparkFun_Thing_Plus_ESP32-S3
+copyright:
+  Copyright 2023 - <a href="https://www.sparkfun.com/" target="_blank" rel="noopener">SparkFun Electronics&#174;<br>
+  <a href="https://goo.gl/maps/vkstCpQZW6jZMjzYA" target="_blank" rel="noopener">6333 Dry Creek Parkway, Niwot, Colorado 80503</a>
+
+# Configuration for webpage theme
+theme:
+  # Theme: https://squidfunk.github.io/mkdocs-material/
+  name: material
+  logo: assets/img/sfe_logo_sq.png
+  palette:
+    primary: grey
+    accent: red
+  # Page Font
+  font:
+    text: Roboto
+    code: Roboto Mono
+  # Features to Include (ref. theme documentation)
+  features:
+    # Enable copy button on code blocks
+    - content.code.copy
+
+    # Enable annotations in code blocks
+    - content.code.annotate
+
+    # Enable "view source" and "edit this page" buttons
+    - content.action.edit
+
+    # Enable Navigation buttons in the footer (i.e. previous/next)
+    - navigation.footer
+
+
+    # Enables anchor tracking (updates page url with the section user is on)
+    # i.e. https://docs.sparkfun.com/<page link>/#<sub-section>
+    - navigation.tracking
+    - navigation.tabs.sticky
+
+    # Enables tabs for navigating the website
+    - navigation.tabs
+
+    # Keeps tabs visible in the header when scrolling
+    - navigation.tabs.sticky
+
+    # Adds pop-up button just below the header (when the user starts to scroll up)
+    # Allows users to easily jump to the beginning of the page
+    - navigation.top
+
+    # Renders path for page navigation at top of the page (makes page navigation more mobile friendly)
+    - navigation.path
+
+# Adds light/dark theme to webpage
+  palette:
+    # Palette toggle for automatic mode
+    - media: "(prefers-color-scheme)"
+      primary: grey
+      accent: red
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to dark mode
+    # Palette toggle for light mode
+    - media: "(prefers-color-scheme: light)"
+      primary: grey
+      accent: red
+      scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Switch to system preference
+
+    # Palette toggle for dark mode
+    - media: "(prefers-color-scheme: dark)"
+      primary: grey
+      accent: red
+      scheme: slate
+      toggle:
+        icon: material/weather-night
+        name: Switch to light mode
+
+  # Configures icons of callout boxes
+  icon:
+    # Sets repo icon to GitHub icon
+    repo: fontawesome/brands/github
+
+    # Admonition Icons (callout boxes)
+    admonition:
+      note: octicons/tag-16
+      abstract: octicons/checklist-16
+      info: octicons/info-16
+      tip: simple/sparkfun
+      success: octicons/check-16
+      question: octicons/question-16
+      warning: octicons/alert-16
+      failure: octicons/x-circle-16
+      danger: octicons/zap-16
+      bug: octicons/bug-16
+      example: octicons/beaker-16
+      quote: octicons/quote-16
+      # Add custom admonitions
+      github: simple/github
+      arduino: simple/arduino
+      python: simple/python
+      code: fontawesome/regular/file-code
+      terminal: octicons/terminal-16
+      serial: fontawesome/solid/display
+      hot: material/fire-alert
+      # Permalink icon
+      link: octicons/link-16
+      
+      
+  # Adds overrides for stylesheets, html, etc.
+  custom_dir: overrides
+  
+  
+  
+# Included MkDocs plugins
+# Add the installation of any new plugins to the ./github/workflows/mkdocs.yml file also
+plugins:
+  - search
+  - typeset
+  - redirects:
+      redirect_maps:
+          'index.md': 'introduction.md'
+  # Add revision date
+  - git-revision-date-localized:
+      enable_creation_date: true
+      type: timeago
+  # Add git committers at bottom of the page
+  - git-committers:
+      repository: sparkfun/SparkFun_Thing_Plus_ESP32-S3
+      branch: main
+  # Add git authors at bottom of the page
+  - git-authors
+  # Enables use of Git submodules and larger code base
+  - monorepo
+
+
+# Included Markdown extensions
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets:
+      # base_path: ['./docs']
+      url_download: true
+      url_max_size: 0
+      url_timeout: 0
+      url_request_headers: {}
+  - pymdownx.superfences
+  - pymdownx.details
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.betterem:
+      smart_enable: all
+  - pymdownx.mark
+  - pymdownx.caret
+  - pymdownx.tilde
+  - pymdownx.keys
+  - tables
+  - admonition
+  - md_in_html
+  - attr_list
+  - pymdownx.emoji:
+      emoji_index: !!python/name:materialx.emoji.twemoji
+      emoji_generator: !!python/name:materialx.emoji.to_svg
+      options:
+        custom_icons:
+          - overrides/.icons
+  - toc:
+      permalink: ''
+
+extra:
+# Configures the hperlink for the logo in the header
+  homepage: https://www.sparkfun.com
+# Configures social icons in the footer
+  social:
+    - icon: fontawesome/brands/youtube
+      link: https://www.youtube.com/sparkfun
+    - icon: fontawesome/brands/instagram
+      link: https://www.instagram.com/sparkfun
+    - icon: fontawesome/brands/github
+      link: https://www.github.com/sparkfun
+    - icon: fontawesome/brands/facebook
+      link: https://www.facebook.com/SparkFun
+    - icon: fontawesome/brands/twitter
+      link: https://twitter.com/sparkfun
+    - icon: fontawesome/solid/cookie-bite
+      link: /#__consent
+      name: Change cookie settings
+
+  # Configures Google Analytics
+  analytics:
+    provider: google
+    property: G-7Y7EYCZVC1
+
+  consent:
+    cookies:
+      analytics:
+        name: Google Analytics
+        checked: true
+    title: Cookie consent
+    description:
+      We use cookies to recognize your repeated visits and preferences, as well as to measure the effectiveness of our documentation and whether users find what they're searching for. With your consent, you're helping us to make our documentation better.
+    actions:
+      - accept
+      - manage 
+      - reject
+
+# Configures styling for PDF rendering and webpage layout
+extra_css:
+  - stylesheet/extra.css
+
+nav:
+  - Hookup Guide:
+    - Introduction: introduction.md
+    - Hardware Overview: hardware_overview.md
+    - Hardware Assembly: hardware_assembly.md
+    - Software Setup & Examples: 
+      - Arduino Setup: software_setup.md
+      - Arduino Examples: arduino_example.md
+  - Resources: resources.md
+  - Support:
+    - Troubleshooting: troubleshooting.md
+    - Submit Issues: github/file_issue.md
+    - Become a Contributor: github/contribute.md

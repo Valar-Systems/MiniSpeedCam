@@ -1,0 +1,13 @@
+Item	Qty	Reference(s)	Value	LibPart	Footprint	LCSC part #
+1	5	C1, C2, C3, C4, C5	1uF	Device:C	Capacitor_SMD:C_0603_1608Metric	C1592
+2	1	FB1	FerriteBead	Device:FerriteBead	Inductor_SMD:L_0603_1608Metric	C14709
+3	2	J1, J2	Conn_02x04_Odd_Even	Connector_Generic:Conn_02x04_Odd_Even	Connector_PinSocket_2.54mm:PinSocket_2x04_P2.54mm_Vertical	C2685133
+4	1	J3	USB_C_Receptacle_USB2.0	Connector:USB_C_Receptacle_USB2.0	Connector_USB:USB_C_Receptacle_G-Switch_GT-USB-7010ASV	C2988369
+5	1	J5	Micro_SD_Card_Det1	Connector:Micro_SD_Card_Det1	lib:XKTF-015-N	C381082
+7	1	J7	AudioJack4	Connector_Audio:AudioJack4	Connector_Audio:Jack_3.5mm_PJ320D_Horizontal	C431535
+8	5	R1, R4, R5, R6, R7	1k	Device:R	Resistor_SMD:R_0603_1608Metric	C22548
+9	2	R2, R3	5.1k	Device:R	Resistor_SMD:R_0603_1608Metric	C105580
+10	6	R8, R9, R10, R11, R12, R13	49k9	Device:R	Resistor_SMD:R_0603_1608Metric	C114624
+11	2	SW1, SW2	SW_Push	Switch:SW_Push	Button_Switch_SMD:SW_Push_1P1T_NO_6x6mm_H9.5mm	C255812
+12	1	SW3	SW_DIP_x01	Switch:SW_DIP_x01	Button_Switch_THT:SW_DIP_SPSTx01_Slide_9.78x4.72mm_W7.62mm_P2.54mm	C126888
+13	1	U1	CH340X	Interface_USB:CH340E	Package_SO:MSOP-10_3x3mm_P0.5mm	C3035748

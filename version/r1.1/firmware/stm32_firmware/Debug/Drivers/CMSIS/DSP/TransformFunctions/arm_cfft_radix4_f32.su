@@ -1,0 +1,3 @@
+../Drivers/CMSIS/DSP/TransformFunctions/arm_cfft_radix4_f32.c:71:6:arm_cfft_radix4_f32	16	static
+../Drivers/CMSIS/DSP/TransformFunctions/arm_cfft_radix4_f32.c:111:6:arm_radix4_butterfly_f32	264	static
+../Drivers/CMSIS/DSP/TransformFunctions/arm_cfft_radix4_f32.c:610:6:arm_radix4_butterfly_inverse_f32	272	static
