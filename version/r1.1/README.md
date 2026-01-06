@@ -2,7 +2,8 @@
 
 Hardware version R1.1 has a problem with the ESP32 USB circuit.
 
-When the ESP32 enters sleep mode, the USB becomes disconnected and the Serial Console will not function after it wakes up. Arduino may need to be restarted or the USB cable may need to be disconnected and reconnected.
+When the ESP32 enters sleep mode, the USB becomes disconnected and the Serial Console will not function after it wakes up.
+Arduino will need to be restarted before you can flash the firmware again.
 
 More info here: https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/api-guides/usb-serial-jtag-console.html#sleep-mode-considerations
 
