@@ -53,7 +53,7 @@ void setup() {
   pinMode(CAMERA_RST_PIN, OUTPUT);   // Set the camera reset pin // Causes crash
 
   // Light Sleep setup
-  esp_sleep_enable_ext0_wakeup(ESP_WAKEUP_PIN, 1);  // Wake up ESP32 when GPIO1 is HIGH //STM will always pull GIO1 high when speeds above 5 mph are detected. Will pull low when speeds
+  //esp_sleep_enable_ext0_wakeup(ESP_WAKEUP_PIN, 1);  // Wake up ESP32 when GPIO1 is HIGH //STM will always pull GIO1 high when speeds above 5 mph are detected. Will pull low when speeds
 
   // Setup Camera
   cameraPowerOn();
@@ -120,9 +120,8 @@ void setup() {
 
 void loop() {
   // Loop not used. Use tasks intead for dual-core performance
-  Serial.println(digitalRead(ESP_WAKEUP_PIN));
-  delay(100);
 }
+
 unsigned long previousMillis = 0;  // Stores last time LED was updated
 const long interval = 5000;        // Interval at which to fall asleep (milliseconds)
 
@@ -143,7 +142,8 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
       speed = get_speed(false);  // Get speed (MPH) from STM32 via UART
     }
 
-    Serial.println(speed);  // TESTING
+    //Serial.println(speed);  // TESTING
+
     /* SLEEP - 120 Seconds after startup
      *  Gives time for user to make changes over WiFi
      */
@@ -153,12 +153,15 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
         if (digitalRead(ESP_WAKEUP_PIN) == 0) {  // Only if STM not measuring data
           wake_flag = false;
           Serial.println("Going to sleep 1");  // Go to sleep
-          delay(1000);
-          //esp_light_sleep_start();
-          cameraPowerOn();  // power on camera after waking
-          Serial.println("WAKING UP 1!!!");
-          connect_wifi = true;
-          //
+
+          //esp_light_sleep_start(); // Do not sleep in version 1.1
+          WiFi.disconnect(true);  // Disconnect from network, optionally true to remove credentials
+          WiFi.mode(WIFI_OFF);    // Set Wi-Fi mode to OFF
+
+          // Add power camera off to save battery
+          // To initiate hardware power-down, the PWDN pin must be tied to high.
+          // Power camera on after speed is detected
+          //cameraPowerOn();  // power on camera after waking?
         }
       }
     }
@@ -171,15 +174,27 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
         if (currentMillis - previousMillis >= interval) {
           previousMillis = currentMillis;      // Save the last time
           Serial.println("Going to sleep 2");  // Go to sleep
-          delay(1000);
-          //esp_wifi_stop(); Disables Wifi to save battery
-          //esp_light_sleep_start();
-          cameraPowerOn();  // power on camera after waking
-          Serial.println("WAKING UP 2!!!");
+
+          //esp_light_sleep_start(); // Do not Go to sleep on R1.1 because USB will disconnect
+          WiFi.disconnect(true);  // Disconnect from network, optionally true to remove credentials
+          WiFi.mode(WIFI_OFF);    // Set Wi-Fi mode to OFF
           previousMillis = millis();
-          connect_wifi = true;
+
+          // Add power camera off to save battery
+          // To initiate hardware power-down, the PWDN pin must be tied to high.
+          // Power camera on after speed is detected
+          //cameraPowerOn();  // power on camera after waking?
         }
       }
+    }
+
+    // Checks if wifi is disconnected and sets connect flag to true. Connection will occur on Core 0
+    if (digitalRead(ESP_WAKEUP_PIN == 1)) { // Check if speed detected on radar first. Use interrupt for this instead?
+      if (WiFi.status() != WL_CONNECTED) {
+        connect_wifi = true;
+      }
+      // Power on camera here? Need to check if it's powered down first
+
     }
 
     if (ignore_flag == false) {
@@ -244,7 +259,7 @@ void taskCore0(void* parameter) {
   while (1) {
 
     if (send_data == true) {
-      takeSendPhoto();
+      sendPhoto();
       send_data = false;
     }
 

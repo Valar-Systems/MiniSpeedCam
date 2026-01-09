@@ -469,7 +469,7 @@
     "pinned_symbol_libs": []
   },
   "meta": {
-    "filename": "lightspeed_r1.kicad_pro",
+    "filename": "MiniSpeedCam.kicad_pro",
     "version": 3
   },
   "net_settings": {
@@ -559,7 +559,7 @@
       "plot": "C:/Github/radar-camera/hardware/kicad/production/",
       "pos_files": "C:/Github/radar-camera/hardware/kicad/",
       "specctra_dsn": "",
-      "step": "../../../../Users/DanielFrenkel/Downloads/radar_camera_V4.step",
+      "step": "../../../../../../../Users/DanielFrenkel/Downloads/radar_camera_V4.step",
       "svg": "",
       "vrml": ""
     },

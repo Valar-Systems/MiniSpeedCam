@@ -147,9 +147,9 @@ void sendLocalIP() {
 }
 
 
-void takeSendPhoto(void) {
+void sendPhoto(void) {
 
-  Serial.println("takeSendPhoto");
+  Serial.println("sendPhoto");
 
   sending_data = true;
 
