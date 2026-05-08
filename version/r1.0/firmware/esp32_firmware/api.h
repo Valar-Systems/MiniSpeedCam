@@ -1,5 +1,32 @@
-#define HOSTNAME "MiniSpeedCam"
+/**
+ * api.h - WiFi management and HTTPS uploads to minispeedcam.com.
+ *
+ * Provides:
+ *   - connectWifiAP():   first-boot bring-up; tries STA, otherwise opens
+ *                        a "MiniSpeedCam" soft-AP for the captive ESPUI.
+ *   - connectWifi():     reconnect helper used by Core 0 when the radar
+ *                        wakes the device and STA is dropped.
+ *   - disconnectWifi():  cleanly tear down WiFi (used during sleep paths).
+ *   - wifiResetButton(): 3-second long-press on WIFI_RESET_PIN clears
+ *                        stored credentials and reboots into AP mode.
+ *   - sendLocalIP():     announce the device's LAN IP to the cloud so
+ *                        the user can reach the ESPUI portal remotely.
+ *   - sendPhoto():       POST the captured photo + max speed (or just
+ *                        the speed when below the photo threshold).
+ *
+ * NOTE: the Bearer token below is a public Bubble.io workflow key for
+ * the minispeedcam.com endpoints, not a per-device secret.
+ */
 
+#define HOSTNAME "MiniSpeedCam"  // mDNS name and Soft-AP SSID
+
+/**
+ * First-boot WiFi bring-up.
+ *
+ * Attempts STA mode using credentials previously stored in NVS. If that
+ * fails within ~7 seconds, falls back to AP mode so the user can open
+ * the ESPUI portal at http://192.168.4.1 and enter credentials.
+ */
 void connectWifiAP() {
   int connect_timeout;
 
@@ -39,6 +66,14 @@ void connectWifiAP() {
   }
 }
 
+/**
+ * Reconnect to the configured STA network.
+ *
+ * Called from Core 0 when Core 1 sets `connect_wifi = true`, which
+ * happens any time radar activity is detected while WiFi is down (we
+ * disconnect during the post-boot grace and idle sleep windows to save
+ * power). Times out at roughly 10 seconds.
+ */
 void connectWifi() {
 
   if (WiFi.status() == WL_CONNECTED) {
@@ -75,6 +110,12 @@ void connectWifi() {
   Serial.println(local_ip_address);
 }
 
+/**
+ * Tear down the WiFi radio entirely.
+ *
+ * Used by sleep paths where we want the radio off until the next radar
+ * trigger, primarily to drop average power consumption.
+ */
 void disconnectWifi() {
   Serial.println("Disconnecting wifi");
   WiFi.disconnect();
@@ -82,7 +123,14 @@ void disconnectWifi() {
   WiFi.setSleep(true);
 }
 
-// Check if the wifi reset button is pressed. Will clear the wifi network and password, and cause the system to restart
+/**
+ * Service the WiFi reset push-button.
+ *
+ * Active-low button on WIFI_RESET_PIN. Polled once per Core 1 iteration:
+ * if held for ~3 seconds, the stored SSID/password in NVS are overwritten
+ * with placeholder values and the ESP32 reboots, which causes the next
+ * connectWifiAP() to fall through to soft-AP mode for reconfiguration.
+ */
 void wifiResetButton() {
   if (digitalRead(WIFI_RESET_PIN) == LOW) {    // Button is pressed (LOW due to pull-up)
     delay(3000);                               // delay 3 seconds
@@ -95,6 +143,13 @@ void wifiResetButton() {
   }
 }
 
+/**
+ * Announce this device's LAN IP to the cloud.
+ *
+ * The minispeedcam.com web app uses the reported IP to render a "Open
+ * device UI" link in the user's dashboard. Only fires when we are in
+ * STA mode and connected; otherwise it returns silently.
+ */
 void sendLocalIP() {
   Serial.println("Sending Local IP address");
 
@@ -147,6 +202,19 @@ void sendLocalIP() {
 }
 
 
+/**
+ * Upload the most recent capture to minispeedcam.com.
+ *
+ * Two endpoints are used depending on whether the run exceeded
+ * `photo_speed`:
+ *   - server_speeding:     full payload including base64 JPEG.
+ *   - server_non_speeding: speed-only payload (no photo).
+ *
+ * Blocks until Core 1 finishes computing the per-vehicle max speed
+ * (`speed_collection_complete`) so we always upload the highest sample
+ * rather than the speed at trigger time. Runs on Core 0 and is gated
+ * by `send_data` from Core 1.
+ */
 void takeSendPhoto(void) {
 
   Serial.println("takeSendPhoto");
