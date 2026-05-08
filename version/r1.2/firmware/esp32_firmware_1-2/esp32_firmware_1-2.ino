@@ -27,7 +27,7 @@
 #define WIFI_RESET_PIN GPIO_NUM_21
 
 #define CAMERA_PWDN_PIN GPIO_NUM_45
-#define CAMERA_RST_PIN GPIO_NUM_3
+#define CAMERA_RST_PIN GPIO_NUM_19
 
 Preferences preferences;
 
