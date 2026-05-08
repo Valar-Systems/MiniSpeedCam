@@ -91,9 +91,20 @@ void setup() {
   Serial.println(espui_password);
 
   // Reconfigure the task watchdog with our timeout before either pinned
-  // task subscribes. deinit is safe even if the WDT was never inited.
+  // task subscribes. The init API differs between Arduino-ESP32 2.x
+  // (IDF 4: timeout-seconds + bool) and 3.x (IDF 5: config struct).
+  // deinit is safe even if the WDT was never inited.
   esp_task_wdt_deinit();
+#if ESP_IDF_VERSION_MAJOR >= 5
+  esp_task_wdt_config_t wdt_config = {
+    .timeout_ms = WDT_TIMEOUT_S * 1000,
+    .idle_core_mask = 0,
+    .trigger_panic = true,
+  };
+  esp_task_wdt_init(&wdt_config);
+#else
   esp_task_wdt_init(WDT_TIMEOUT_S, true);
+#endif
 
   // GPIO setup
   pinMode(ESP_WAKEUP_PIN, INPUT);
