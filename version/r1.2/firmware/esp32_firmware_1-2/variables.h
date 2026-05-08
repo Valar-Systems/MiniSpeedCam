@@ -52,3 +52,5 @@ uint16_t wifi_ssid_text, wifi_pass_text, camera_id_text;  // ESPUI text inputs f
 String local_ip_address;                     // Most recent station-mode IP (sent to the cloud)
 
 String hostname = "Radar";                   // mDNS / WiFi station hostname
+
+DNSServer dnsServer;                         // Captive DNS used in AP mode so any URL hits the ESPUI portal

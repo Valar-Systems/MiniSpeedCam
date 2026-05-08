@@ -56,8 +56,6 @@ Preferences preferences;  // NVS-backed key/value store for WiFi creds and user 
 #include "api.h"
 #include "espui_settings.h"
 
-DNSServer dnsServer;  // Captive-DNS used in AP mode so any URL hits the ESPUI portal
-
 TaskHandle_t Task0;  // Handle for the Core 0 task (HTTPS uploads / WiFi reconnect)
 TaskHandle_t Task1;  // Handle for the Core 1 task (radar polling / sleep / DNS)
 

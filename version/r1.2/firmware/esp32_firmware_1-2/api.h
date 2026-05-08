@@ -57,6 +57,11 @@ void connectWifiAP() {
     WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
     WiFi.softAP(HOSTNAME);
 
+    // Resolve every host to the soft-AP IP so phones/laptops detect the
+    // captive portal and the user lands on the ESPUI page automatically.
+    // Paired with dnsServer.processNextRequest() in taskCore1.
+    dnsServer.start(53, "*", IPAddress(192, 168, 4, 1));
+
     connect_timeout = 20;
     do {
       delay(250);
