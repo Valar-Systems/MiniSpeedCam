@@ -251,9 +251,9 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
           // WiFi via the captive portal, so leave the AP up.
           if (WiFi.getMode() != WIFI_AP) {
             Serial.println("Grace window over: powering down WiFi");
-            //esp_light_sleep_start(); // Do not sleep in version 1.1
-            WiFi.disconnect(true);  // wifioff=true; second arg defaults false so creds are kept
-            WiFi.mode(WIFI_OFF);
+            esp_light_sleep_start(); // Do not sleep in version 1.1
+            //WiFi.disconnect(true);  // wifioff=true; second arg defaults false so creds are kept
+            //WiFi.mode(WIFI_OFF);
           } else {
             Serial.println("Grace window over: keeping soft-AP up for configuration");
           }
@@ -278,9 +278,9 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
           // captive portal alive while the user is configuring.
           if (WiFi.getMode() != WIFI_AP) {
             Serial.println("Idle 5s with no radar activity: powering down WiFi");
-            //esp_light_sleep_start(); // Do not Go to sleep on R1.1 because USB will disconnect
-            WiFi.disconnect(true);
-            WiFi.mode(WIFI_OFF);
+            esp_light_sleep_start(); // Do not Go to sleep on R1.1 because USB will disconnect
+            //WiFi.disconnect(true);
+            //WiFi.mode(WIFI_OFF);
           }
           previousMillis = millis();
 
