@@ -315,9 +315,7 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
           if ((maxSpeed >= photo_speed) && (collect_data_point == true)) {  // Only take a photo if one is not already in progress
             Serial.println("Taking photo_speed photo");
             photo_captured = takePhoto();
-            if (photo_captured) {
-              send_data = true;          // Process photo on Core 0
-            } else {
+            if (!photo_captured) {
               Serial.println("Capture failed; will not retry this run");
             }
             collect_data_point = false;  // give up on the photo for this run either way
@@ -334,8 +332,13 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
         if (maxSpeed >= photo_speed && photo_captured) {
           send_photo = true;
         }
-
-        speed_collection_complete = true;  // Signal to httpsSend task to send data
+        // Every pass that crossed min_speed gets uploaded - photo runs hit
+        // the speeding endpoint, all others (under photo_speed or failed
+        // capture) go to the non_speeding endpoint with just the speed.
+        // Order matters: send_photo must be set before speed_collection_complete
+        // so sendPhoto() picks the right endpoint after its wait loop unblocks.
+        send_data = true;
+        speed_collection_complete = true;
 
         previousMillis = millis();
       }
