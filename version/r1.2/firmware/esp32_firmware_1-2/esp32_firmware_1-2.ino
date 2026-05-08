@@ -291,7 +291,6 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
           send_photo = true;
         }
 
-        send_API = true;
         speed_collection_complete = true;  // Signal to httpsSend task to send data
 
         previousMillis = millis();
