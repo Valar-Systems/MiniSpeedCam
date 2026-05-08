@@ -210,10 +210,18 @@ const long interval = 5000;        // Idle window (ms) of zero-speed before slee
  */
 void taskCore1(void* parameter) {  // Code for task running on Core 1
   esp_task_wdt_add(NULL);          // Subscribe this task to the watchdog
+  unsigned long last_status_push = 0;  // ms timestamp of last ESPUI status refresh
   while (1) {                      // Loop indefinitely
     esp_task_wdt_reset();          // Heartbeat the watchdog each cycle
 
     dnsServer.processNextRequest();  // Process request for ESPUI
+
+    // Push status-tab updates at ~1Hz; the radar loop runs at 10Hz which
+    // is too fast for the ESPUI WebSocket and would just queue updates.
+    if (millis() - last_status_push >= 1000) {
+      last_status_push = millis();
+      updateStatusUI();
+    }
 
     if (ignore_flag == true) {
       if (millis() >= ignore_time) {

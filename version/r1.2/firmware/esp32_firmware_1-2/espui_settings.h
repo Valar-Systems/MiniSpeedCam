@@ -121,21 +121,76 @@ void buttonClearNetworkCall(Control* sender, int type) {
 }
 
 /**
+ * Refresh the read-only labels on the Status tab.
+ *
+ * Called from taskCore1 on a ~1Hz cadence (slower than the radar polling
+ * loop so we don't flood the WebSocket connection ESPUI uses to push
+ * value updates to connected browsers). All values are derived from
+ * existing globals + the WiFi driver.
+ */
+void updateStatusUI(void) {
+  String unit = is_kph ? " kph" : " mph";
+
+  ESPUI.updateLabel(status_speed_label, String(speed, 1) + unit);
+  ESPUI.updateLabel(status_max_label, String(maxSpeed, 1) + unit);
+
+  String upload_status;
+  if (sending_data) {
+    upload_status = "Uploading...";
+  } else if (httpsResponseCode == 0) {
+    upload_status = "No uploads yet";
+  } else if (httpsResponseCode > 0) {
+    upload_status = "OK (" + String(httpsResponseCode) + ")";
+  } else {
+    upload_status = "Failed (" + String(httpsResponseCode) + ")";
+  }
+  ESPUI.updateLabel(status_upload_label, upload_status);
+
+  String wifi_status;
+  wifi_mode_t mode = WiFi.getMode();
+  if (mode == WIFI_AP) {
+    wifi_status = "AP mode (configuration)";
+  } else if (mode == WIFI_OFF) {
+    wifi_status = "Radio off (idle)";
+  } else if (WiFi.status() == WL_CONNECTED) {
+    wifi_status = WiFi.SSID() + " (" + String(WiFi.RSSI()) + " dBm)";
+  } else {
+    wifi_status = "Disconnected";
+  }
+  ESPUI.updateLabel(status_wifi_label, wifi_status);
+
+  unsigned long sec = millis() / 1000;
+  char buf[32];
+  snprintf(buf, sizeof(buf), "%luh %lum %lus", sec / 3600, (sec % 3600) / 60, sec % 60);
+  ESPUI.updateLabel(status_uptime_label, String(buf));
+}
+
+/**
  * Build the ESPUI control tree and start serving it.
  *
- * Tab 1 ("Device"):
+ * Tab 1 ("Status"): live read-only telemetry, refreshed by updateStatusUI.
+ *
+ * Tab 2 ("Device"):
  *   - MPH/KPH switcher
  *   - Minimum speed (run threshold)
  *   - Photo speed (capture threshold)
  *
- * Tab 2 ("Wifi Settings"):
+ * Tab 3 ("Wifi Settings"):
  *   - Clear Settings button
- *   - Network / Password / Camera ID text inputs
+ *   - Network / Password / Camera ID / API Token text inputs
  *   - Save Settings button
  */
 void load_espui(void) {
+  uint16_t tab_status = ESPUI.addControl(ControlType::Tab, "Status", "Status");
   uint16_t tab1 = ESPUI.addControl(ControlType::Tab, "Device", "Device");
   uint16_t tab2 = ESPUI.addControl(ControlType::Tab, "Wifi Settings", "Wifi Settings");
+
+  // tab_status: read-only telemetry, updated from taskCore1 each second.
+  status_speed_label  = ESPUI.addControl(ControlType::Label, "Current Speed", "--", ControlColor::Turquoise, tab_status);
+  status_max_label    = ESPUI.addControl(ControlType::Label, "Last Run Max", "--", ControlColor::Turquoise, tab_status);
+  status_upload_label = ESPUI.addControl(ControlType::Label, "Last Upload",  "--", ControlColor::Turquoise, tab_status);
+  status_wifi_label   = ESPUI.addControl(ControlType::Label, "WiFi",          "--", ControlColor::Turquoise, tab_status);
+  status_uptime_label = ESPUI.addControl(ControlType::Label, "Uptime",        "--", ControlColor::Turquoise, tab_status);
 
   //tab1: Device settings
   ESPUI.addControl(ControlType::Switcher, "MPH/KPH:", String(is_kph), ControlColor::Alizarin, tab1, &speedUnitsCall);
