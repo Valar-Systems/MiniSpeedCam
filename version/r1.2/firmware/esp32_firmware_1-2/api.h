@@ -55,7 +55,10 @@ void connectWifiAP() {
     Serial.println("\nCreating access point...");
     WiFi.mode(WIFI_AP);
     WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
-    WiFi.softAP(HOSTNAME);
+    // WPA2 with the per-device MAC-derived password (printed at boot in
+    // setup()). Prevents anyone in radio range from joining and rewriting
+    // the user's stored WiFi credentials via the captive portal.
+    WiFi.softAP(HOSTNAME, espui_password.c_str());
 
     // Resolve every host to the soft-AP IP so phones/laptops detect the
     // captive portal and the user lands on the ESPUI page automatically.
@@ -95,7 +98,8 @@ void connectWifi() {
   // try to connect to existing network
   Serial.println("\n\nTry to connect to existing network");
   Serial.println(ssid);
-  Serial.println(password);
+  // Intentionally not logging `password` to avoid leaking the WiFi PSK
+  // to anyone with USB serial access.
   WiFi.begin(ssid, password);
   uint8_t timeout = 100;
 

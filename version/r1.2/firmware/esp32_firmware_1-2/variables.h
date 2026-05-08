@@ -54,3 +54,8 @@ String local_ip_address;                     // Most recent station-mode IP (sen
 String hostname = "Radar";                   // mDNS / WiFi station hostname
 
 DNSServer dnsServer;                         // Captive DNS used in AP mode so any URL hits the ESPUI portal
+
+// Per-device password derived from the WiFi MAC. Used both as the soft-AP
+// WPA2 PSK and as the ESPUI HTTP basic-auth password (user "admin").
+// Printed to Serial at boot; the operator gets it from the device label.
+String espui_password;

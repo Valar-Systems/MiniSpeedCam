@@ -34,8 +34,15 @@
 #include "soc/soc.h"           // Disable brownout problems
 #include "soc/rtc_cntl_reg.h"  // Disable brownout problems
 #include "driver/rtc_io.h"
+#include "esp_task_wdt.h"      // Per-task watchdog for the two pinned loops
 #include "SPIFFS.h"
 #include "Base64.h"
+
+// Task watchdog timeout. Long enough to cover HTTPS connect + send (each
+// capped at 5s in api.h) plus the 3s wifiResetButton blocking poll, with
+// margin. If a task fails to reset the WDT within this window the chip
+// panics and reboots, so a wedged radar drain or stuck POST recovers.
+#define WDT_TIMEOUT_S 30
 
 // --- GPIO assignments (board revision 1.2) ---
 #define STM32_RESET_PIN GPIO_NUM_47  // Drives STM32 NRST low to reset the radar MCU
@@ -69,6 +76,23 @@ TaskHandle_t Task1;  // Handle for the Core 1 task (radar polling / sleep / DNS)
  */
 void setup() {
   Serial.begin(115200);
+
+  // Derive a stable per-device password from the WiFi MAC. 8 hex chars
+  // satisfies WPA2's 8-char minimum; same string is reused for ESPUI auth.
+  {
+    uint8_t mac[6];
+    WiFi.macAddress(mac);
+    char buf[9];
+    snprintf(buf, sizeof(buf), "%02X%02X%02X%02X", mac[2], mac[3], mac[4], mac[5]);
+    espui_password = String(buf);
+  }
+  Serial.print("Soft-AP / ESPUI password: ");
+  Serial.println(espui_password);
+
+  // Reconfigure the task watchdog with our timeout before either pinned
+  // task subscribes. deinit is safe even if the WDT was never inited.
+  esp_task_wdt_deinit();
+  esp_task_wdt_init(WDT_TIMEOUT_S, true);
 
   // GPIO setup
   pinMode(ESP_WAKEUP_PIN, INPUT);
@@ -174,7 +198,9 @@ const long interval = 5000;        // Idle window (ms) of zero-speed before slee
  *   7. Polls the WiFi-reset button.
  */
 void taskCore1(void* parameter) {  // Code for task running on Core 1
+  esp_task_wdt_add(NULL);          // Subscribe this task to the watchdog
   while (1) {                      // Loop indefinitely
+    esp_task_wdt_reset();          // Heartbeat the watchdog each cycle
 
     dnsServer.processNextRequest();  // Process request for ESPUI
 
@@ -200,11 +226,18 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
       if (millis() >= sleep_time) {              // Only if 120 seconds passed
         if (digitalRead(ESP_WAKEUP_PIN) == 0) {  // Only if STM not measuring data
           wake_flag = false;
-          Serial.println("Grace window over: powering down WiFi");
 
-          //esp_light_sleep_start(); // Do not sleep in version 1.1
-          WiFi.disconnect(true);  // Disconnect from network, optionally true to remove credentials
-          WiFi.mode(WIFI_OFF);    // Set Wi-Fi mode to OFF
+          // Only tear the radio down when we're actually associated to a
+          // network. In AP-fallback mode the user may still be configuring
+          // WiFi via the captive portal, so leave the AP up.
+          if (WiFi.getMode() != WIFI_AP) {
+            Serial.println("Grace window over: powering down WiFi");
+            //esp_light_sleep_start(); // Do not sleep in version 1.1
+            WiFi.disconnect(true);  // wifioff=true; second arg defaults false so creds are kept
+            WiFi.mode(WIFI_OFF);
+          } else {
+            Serial.println("Grace window over: keeping soft-AP up for configuration");
+          }
 
           // Add power camera off to save battery
           // To initiate hardware power-down, the PWDN pin must be tied to high.
@@ -221,11 +254,15 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
       if (speed == 0) {  // Check if speed is 0
         if (currentMillis - previousMillis >= interval) {
           previousMillis = currentMillis;      // Save the last time
-          Serial.println("Idle 5s with no radar activity: powering down WiFi");
 
-          //esp_light_sleep_start(); // Do not Go to sleep on R1.1 because USB will disconnect
-          WiFi.disconnect(true);  // Disconnect from network, optionally true to remove credentials
-          WiFi.mode(WIFI_OFF);    // Set Wi-Fi mode to OFF
+          // Same AP-aware guard as the grace-window path above; keep the
+          // captive portal alive while the user is configuring.
+          if (WiFi.getMode() != WIFI_AP) {
+            Serial.println("Idle 5s with no radar activity: powering down WiFi");
+            //esp_light_sleep_start(); // Do not Go to sleep on R1.1 because USB will disconnect
+            WiFi.disconnect(true);
+            WiFi.mode(WIFI_OFF);
+          }
           previousMillis = millis();
 
           // Add power camera off to save battery
@@ -255,11 +292,14 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
         delay(100);
         maxSpeed = 0;  // Tracks the max speed during the entire duraton of tracking
         bool collect_data_point = true;
+        bool photo_captured = false;
         send_data = false;
         send_photo = false;
         speed_collection_complete = false;  // Don't send data until photo is finished
 
         while (speed >= min_speed) {  // Capture the cars maximum speed during the entire drive. Then reset back to zero. Send this max speed.
+          esp_task_wdt_reset();  // Long passes can exceed WDT_TIMEOUT_S; heartbeat per cycle
+
           if (is_kph == true) {
             speed = get_speed(true);  // Get speed (KPH) from STM32 via UART
           } else {
@@ -274,9 +314,13 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
 
           if ((maxSpeed >= photo_speed) && (collect_data_point == true)) {  // Only take a photo if one is not already in progress
             Serial.println("Taking photo_speed photo");
-            takePhoto();
-            send_data = true;            // Process photo on Core 0
-            collect_data_point = false;  // flag that activates photo only one time
+            photo_captured = takePhoto();
+            if (photo_captured) {
+              send_data = true;          // Process photo on Core 0
+            } else {
+              Serial.println("Capture failed; will not retry this run");
+            }
+            collect_data_point = false;  // give up on the photo for this run either way
           }
 
           delay(100);
@@ -285,7 +329,9 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
         Serial.print("MAX maxSpeed: ");
         Serial.println(maxSpeed);
 
-        if (maxSpeed >= photo_speed) {
+        // Only flag a photo upload if we actually have one. A speeding pass
+        // with a failed capture falls through to the speed-only endpoint.
+        if (maxSpeed >= photo_speed && photo_captured) {
           send_photo = true;
         }
 
@@ -311,7 +357,9 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
  * triggers a (re)connection attempt.
  */
 void taskCore0(void* parameter) {
+  esp_task_wdt_add(NULL);
   while (1) {
+    esp_task_wdt_reset();
 
     if (send_data == true) {
       sendPhoto();

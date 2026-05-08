@@ -109,17 +109,23 @@ int cameraSetup(void) {
 /**
  * Capture a single JPEG frame and base64-encode it for upload.
  *
- * Side effects: populates the globals `photo_filename` and `photo_base64`
- * (defined in variables.h), which sendPhoto() then embeds in the JSON
- * upload body. The frame buffer is returned to the driver before exit.
+ * Side effects: on success populates the globals `photo_filename` and
+ * `photo_base64` (defined in variables.h), which sendPhoto() then embeds
+ * in the JSON upload body. On failure, both globals are cleared so a
+ * stale photo from a previous run can never be re-uploaded.
+ *
+ * @return true on a valid frame buffer, false otherwise.
  */
-void takePhoto(void) {
-  camera_fb_t* fb = esp_camera_fb_get();  // Capture photo
+bool takePhoto(void) {
+  camera_fb_t* fb = esp_camera_fb_get();
   if (!fb) {
-    Serial.println("Camera capture failed 1");
-    return;
+    Serial.println("Camera capture failed (esp_camera_fb_get returned NULL)");
+    photo_filename = String();
+    photo_base64 = String();
+    return false;
   }
   photo_filename = "image.jpg";
   photo_base64 = base64::encode(fb->buf, fb->len);
   esp_camera_fb_return(fb);
+  return true;
 }

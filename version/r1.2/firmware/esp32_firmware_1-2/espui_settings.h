@@ -159,13 +159,8 @@ void load_espui(void) {
   // Enable this option if you want sliders to be continuous (update during move) and not discrete (update on stop)
   // ESPUI.sliderContinuous = true;
 
-  /*
-     * Optionally you can use HTTP BasicAuth. Keep in mind that this is NOT a
-     * SECURE way of limiting access.
-     * Anyone who is able to sniff traffic will be able to intercept your password
-     * since it is transmitted in cleartext. Just add a string as username and
-     * password, for example begin("ESPUI Control", "username", "password")
-     */
-
-  ESPUI.begin("ESPUI Control");
+  // HTTP basic auth - cleartext over plain HTTP, but combined with the
+  // soft-AP's WPA2 PSK or the user's home-WiFi WPA2 it's a meaningful
+  // barrier against casual LAN-side configuration tampering.
+  ESPUI.begin("MiniSpeedCam", "admin", espui_password.c_str());
 }
