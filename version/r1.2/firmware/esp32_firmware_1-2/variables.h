@@ -22,6 +22,7 @@ float maxSpeed = 0.0f;                       // Highest speed observed during th
 String ssid;                                 // Stored WiFi SSID, "NOT_SET" until configured
 String password;                             // Stored WiFi password, "NOT_SET" until configured
 String camera_id;                            // minispeedcam.com camera identifier
+String api_token;                            // Bearer token for the minispeedcam.com Bubble.io workflows; rotatable from the ESPUI portal
 
 // --- Sleep / startup gating ---
 unsigned long sleep_time;                    // Absolute millis() at which post-boot grace window ends
@@ -48,7 +49,7 @@ String photo_filename;                       // Filename field included in the u
 int speed_actual;                            // Snapshot of maxSpeed taken at upload time
 
 // --- ESPUI control handles ---
-uint16_t wifi_ssid_text, wifi_pass_text, camera_id_text;  // ESPUI text inputs for credentials
+uint16_t wifi_ssid_text, wifi_pass_text, camera_id_text, api_token_text;  // ESPUI text inputs for credentials
 String local_ip_address;                     // Most recent station-mode IP (sent to the cloud)
 
 String hostname = "Radar";                   // mDNS / WiFi station hostname

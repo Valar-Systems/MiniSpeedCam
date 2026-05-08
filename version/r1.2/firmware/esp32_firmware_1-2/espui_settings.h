@@ -65,6 +65,11 @@ void textCameraIdCall(Control* sender, int type) {
 // Leave blank
 }
 
+// API token is also persisted on Save; nothing to do per keystroke.
+void textApiTokenCall(Control* sender, int type) {
+// Leave blank
+}
+
 // SSID is read on Save (see buttonSaveNetworkCall); no live update needed.
 void textNetworkCall(Control* sender, int type) {
   //    ssid = sender->value;
@@ -90,9 +95,11 @@ void buttonSaveNetworkCall(Control* sender, int type) {
     String new_ssid = ESPUI.getControl(wifi_ssid_text)->value;
     String new_pass = ESPUI.getControl(wifi_pass_text)->value;
     String new_camera_id = ESPUI.getControl(camera_id_text)->value;
+    String new_api_token = ESPUI.getControl(api_token_text)->value;
     preferences.putString("ssid", new_ssid);
     preferences.putString("pass", new_pass);
     preferences.putString("camera_id", new_camera_id);
+    preferences.putString("api_token", new_api_token);
     ESP.restart();
   }
 }
@@ -146,6 +153,7 @@ void load_espui(void) {
   wifi_ssid_text = ESPUI.addControl(ControlType::Text, "Network", String(ssid), ControlColor::Emerald, tab2, &textNetworkCall); //Text: Network
   wifi_pass_text = ESPUI.addControl(ControlType::Text, "Password", String(password), ControlColor::Emerald, tab2, &textPasswordCall); //Text: Password
   camera_id_text = ESPUI.addControl(ControlType::Text, "Camera ID:", String(camera_id), ControlColor::Peterriver, tab2, &textCameraIdCall); //Text: Camera ID
+  api_token_text = ESPUI.addControl(ControlType::Text, "API Token:", String(api_token), ControlColor::Peterriver, tab2, &textApiTokenCall); //Text: API token (rotatable)
 
   //Button: Save
   ESPUI.addControl(ControlType::Button, "Save Settings", "SAVE", ControlColor::Emerald, tab2, &buttonSaveNetworkCall);

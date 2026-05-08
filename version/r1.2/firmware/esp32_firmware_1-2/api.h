@@ -228,8 +228,10 @@ void sendLocalIP() {
     //WiFiClient client;
     HTTPClient https;
 
-    String recv_token = "bc6d8bd23bbeb6b13fa67448c244a129";  // Complete Bearer token
-    recv_token = "Bearer " + recv_token;                     // Adding "Bearer " before token
+    // Bearer token is loaded from NVS (default seeded from the original
+    // baked-in value at first boot) so it can be rotated via the ESPUI
+    // portal without reflashing.
+    String recv_token = "Bearer " + api_token;
 
     // Sending POST request
     https.begin(*client, server_local_ip_address);

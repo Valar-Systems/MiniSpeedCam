@@ -117,6 +117,10 @@ void setup() {
   ssid = preferences.getString("ssid", "NOT_SET");
   password = preferences.getString("pass", "NOT_SET");
   camera_id = preferences.getString("camera_id", "NOT_SET");  // Create an account and camera at tachtracker.com
+  // Default falls back to the original baked-in token so devices flashed
+  // before this change keep working without manual configuration; the
+  // operator can rotate it from the ESPUI portal afterward.
+  api_token = preferences.getString("api_token", "bc6d8bd23bbeb6b13fa67448c244a129");
   min_speed = preferences.getInt("min_speed", 3);             // The minimum speed (MPH) that the tracker should track any vehicle and upload data
   photo_speed = preferences.getInt("photo_speed", 10);        // Cars speed (MPH) when photo should be taken
   is_kph = preferences.getBool("is_kph", 0);                  // Cars speed (MPH) when photo should be taken
