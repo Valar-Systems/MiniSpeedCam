@@ -11338,6 +11338,12 @@
 		(uuid "701cf617-ecdc-49c8-8083-747c67427035")
 	)
 	(junction
+		(at 78.74 365.76)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "7154a2ed-3358-4f91-a6fb-b40da175396c")
+	)
+	(junction
 		(at 133.35 452.12)
 		(diameter 0)
 		(color 0 0 0 0)
@@ -12761,6 +12767,16 @@
 	)
 	(wire
 		(pts
+			(xy 76.2 365.76) (xy 78.74 365.76)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "36efa397-edf6-4f16-a45d-e238f5521d17")
+	)
+	(wire
+		(pts
 			(xy 137.16 218.44) (xy 137.16 219.71)
 		)
 		(stroke
@@ -12948,6 +12964,16 @@
 			(type default)
 		)
 		(uuid "3deb512b-397b-4c72-b29c-16948631f5dd")
+	)
+	(wire
+		(pts
+			(xy 78.74 365.76) (xy 78.74 373.38)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "3e4a2998-3d75-4fb0-b26f-da4edf678257")
 	)
 	(wire
 		(pts
@@ -13701,7 +13727,7 @@
 	)
 	(wire
 		(pts
-			(xy 78.74 360.68) (xy 78.74 394.97)
+			(xy 78.74 360.68) (xy 78.74 365.76)
 		)
 		(stroke
 			(width 0)
@@ -15151,7 +15177,7 @@
 	)
 	(wire
 		(pts
-			(xy 78.74 410.21) (xy 78.74 421.64)
+			(xy 78.74 388.62) (xy 78.74 391.16)
 		)
 		(stroke
 			(width 0)
@@ -17253,7 +17279,7 @@
 	)
 	(global_label "GPIO0{slash}BOOT"
 		(shape input)
-		(at 78.74 374.65 180)
+		(at 76.2 365.76 180)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -17263,7 +17289,7 @@
 		)
 		(uuid "447fe837-71b2-4971-becc-134c68edf23a")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 63.8409 374.65 0)
+			(at 61.3009 365.76 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -37854,7 +37880,7 @@
 	)
 	(symbol
 		(lib_id "TS-1088-AR02016:TS-1088-AR02016")
-		(at 78.74 402.59 270)
+		(at 78.74 381 270)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -37862,10 +37888,9 @@
 		(on_board yes)
 		(in_pos_files yes)
 		(dnp no)
-		(fields_autoplaced yes)
 		(uuid "db93b21c-95b7-4029-8c2b-76d94ee76f16")
 		(property "Reference" "SW8"
-			(at 81.28 401.3199 90)
+			(at 71.882 379.476 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -37876,7 +37901,7 @@
 			)
 		)
 		(property "Value" "TS-1088-AR02016"
-			(at 81.28 403.8599 90)
+			(at 57.404 382.524 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -37887,7 +37912,7 @@
 			)
 		)
 		(property "Footprint" "TS-1088-AR02016:SW-SMD_L3.9-W3.0-P4.45"
-			(at 71.12 402.59 0)
+			(at 71.12 381 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -37898,7 +37923,7 @@
 			)
 		)
 		(property "Datasheet" "https://lcsc.com/product-detail/Tactile-Switches_XUNPU-TS-1088-AR02016_C720477.html"
-			(at 68.58 402.59 0)
+			(at 68.58 381 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -37909,7 +37934,7 @@
 			)
 		)
 		(property "Description" ""
-			(at 78.74 402.59 0)
+			(at 78.74 381 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -37920,7 +37945,7 @@
 			)
 		)
 		(property "LCSC" "C720477"
-			(at 66.04 402.59 0)
+			(at 66.04 381 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -41714,7 +41739,7 @@
 	)
 	(symbol
 		(lib_id "SparkFun-PowerSymbol:GND")
-		(at 78.74 421.64 0)
+		(at 78.74 391.16 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -41724,7 +41749,7 @@
 		(dnp no)
 		(uuid "f4a6fe8f-5d12-4305-a0ed-d2fd6c32afc7")
 		(property "Reference" "#PWR0118"
-			(at 78.74 427.99 0)
+			(at 78.74 397.51 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -41735,7 +41760,7 @@
 			)
 		)
 		(property "Value" "GND"
-			(at 78.74 425.45 0)
+			(at 78.74 394.97 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -41745,7 +41770,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 78.74 421.64 0)
+			(at 78.74 391.16 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -41756,7 +41781,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 78.74 421.64 0)
+			(at 78.74 391.16 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -41767,7 +41792,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 78.74 421.64 0)
+			(at 78.74 391.16 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
