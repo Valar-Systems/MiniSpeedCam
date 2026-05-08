@@ -1,4 +1,21 @@
-// Set KPH/MPH
+/**
+ * espui_settings.h - ESPUI web UI controls and persistence callbacks.
+ *
+ * Builds the configuration portal exposed at the device's IP:
+ *   - "Device" tab:  speed units toggle, minimum speed, photo speed.
+ *   - "Wifi Settings" tab: SSID/password/camera-id text inputs, plus
+ *     Save (writes to NVS and reboots) and Clear Settings buttons.
+ *
+ * Each control's callback updates the matching global in variables.h
+ * and persists it via the shared `preferences` (NVS) instance.
+ */
+
+/**
+ * Toggle MPH (off) vs KPH (on).
+ *
+ * @param sender ESPUI Switcher control.
+ * @param value  S_ACTIVE = KPH, S_INACTIVE = MPH.
+ */
 void speedUnitsCall(Control* sender, int value) {
   Serial.print(", Value: ");
   Serial.println(sender->value);
@@ -20,7 +37,10 @@ void speedUnitsCall(Control* sender, int value) {
   preferences.putBool("is_kph", is_kph);
 }
 
-// Minimum speed to trigger any radar
+/**
+ * Persist the minimum speed at which a tracking run begins.
+ * Below this value, samples are ignored entirely.
+ */
 void minSpeedCall(Control* sender, int type) {
   Serial.print(", Value: ");
   Serial.println(sender->value);
@@ -28,6 +48,10 @@ void minSpeedCall(Control* sender, int type) {
   preferences.putInt("min_speed", min_speed);
 }
 
+/**
+ * Persist the speed at which a photo is captured during a run.
+ * Runs whose max speed never reaches photo_speed upload speed-only.
+ */
 void photoSpeedCall(Control* sender, int type) {
   Serial.print(", Value: ");
   Serial.println(sender->value);
@@ -35,21 +59,30 @@ void photoSpeedCall(Control* sender, int type) {
   preferences.putInt("photo_speed", photo_speed);
 }
 
+// Camera ID is read directly off the ESPUI control inside
+// buttonSaveNetworkCall(), so per-keystroke handling is unnecessary.
 void textCameraIdCall(Control* sender, int type) {
 // Leave blank
 }
 
+// SSID is read on Save (see buttonSaveNetworkCall); no live update needed.
 void textNetworkCall(Control* sender, int type) {
   //    ssid = sender->value;
   //    Serial.print(ssid);
 }
 
+// Password is read on Save (see buttonSaveNetworkCall); no live update needed.
 void textPasswordCall(Control* sender, int type) {
   //    Serial.print(sender->value);
   //    pass = sender->value;
   //    Serial.print(pass);
 }
 
+/**
+ * Save Settings button: snapshots SSID/password/camera_id from the
+ * ESPUI text inputs into NVS, then reboots so the new credentials take
+ * effect via connectWifiAP() at startup.
+ */
 void buttonSaveNetworkCall(Control* sender, int type) {
   if (type == B_UP) {
     Serial.println("Button Pressed");
@@ -63,6 +96,12 @@ void buttonSaveNetworkCall(Control* sender, int type) {
   }
 }
 
+/**
+ * Clear Settings button: wipes stored WiFi credentials and reboots.
+ *
+ * After reboot, connectWifiAP() will fail to associate and bring up
+ * the captive AP for reconfiguration.
+ */
 void buttonClearNetworkCall(Control* sender, int type) {
   if (type == B_UP) {
     preferences.putInt("wifi_set", 0);
@@ -73,6 +112,19 @@ void buttonClearNetworkCall(Control* sender, int type) {
   }
 }
 
+/**
+ * Build the ESPUI control tree and start serving it.
+ *
+ * Tab 1 ("Device"):
+ *   - MPH/KPH switcher
+ *   - Minimum speed (run threshold)
+ *   - Photo speed (capture threshold)
+ *
+ * Tab 2 ("Wifi Settings"):
+ *   - Clear Settings button
+ *   - Network / Password / Camera ID text inputs
+ *   - Save Settings button
+ */
 void load_espui(void) {
   uint16_t tab1 = ESPUI.addControl(ControlType::Tab, "Device", "Device");
   uint16_t tab2 = ESPUI.addControl(ControlType::Tab, "Wifi Settings", "Wifi Settings");
