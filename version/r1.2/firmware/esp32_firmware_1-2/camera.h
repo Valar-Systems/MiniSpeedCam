@@ -1,3 +1,13 @@
+/**
+ * camera.h - OV2640 camera setup and capture for the MiniSpeedCam.
+ *
+ * The PWDN and RESET lines are wired to dedicated MCU GPIOs
+ * (CAMERA_PWDN_PIN / CAMERA_RST_PIN, defined in the main sketch) so
+ * the esp_camera config below sets PWDN_GPIO_NUM/RESET_GPIO_NUM to -1
+ * and we toggle them manually in cameraPowerOn().
+ */
+
+// --- OV2640 to ESP32-S3 pin mapping (board revision 1.2) ---
 #define PWDN_GPIO_NUM -1
 #define RESET_GPIO_NUM -1
 #define XCLK_GPIO_NUM 16
@@ -17,6 +27,12 @@
 #define HREF_GPIO_NUM 7
 #define PCLK_GPIO_NUM 8
 
+/**
+ * Power-cycle the OV2640.
+ *
+ * Drives PWDN low (sensor enabled) and pulses RST low->high to bring
+ * the sensor out of reset cleanly. Must be called before cameraSetup().
+ */
 void cameraPowerOn() {
   digitalWrite(CAMERA_PWDN_PIN, LOW);
   digitalWrite(CAMERA_RST_PIN, LOW);
@@ -25,6 +41,14 @@ void cameraPowerOn() {
   delay(10);
 }
 
+/**
+ * Initialize the OV2640 via esp_camera.
+ *
+ * Configures pin mapping, 20 MHz XCLK, UXGA (1600x1200) JPEG output
+ * stored in PSRAM, and applies sensor tweaks (vflip, brightness).
+ *
+ * @return 1 on success, 0 if esp_camera_init() failed (see Serial log).
+ */
 int cameraSetup(void) {
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
@@ -82,6 +106,13 @@ int cameraSetup(void) {
   return 1;
 }
 
+/**
+ * Capture a single JPEG frame and base64-encode it for upload.
+ *
+ * Side effects: populates the globals `photo_filename` and `photo_base64`
+ * (defined in variables.h), which sendPhoto() then embeds in the JSON
+ * upload body. The frame buffer is returned to the driver before exit.
+ */
 void takePhoto(void) {
   camera_fb_t* fb = esp_camera_fb_get();  // Capture photo
   if (!fb) {
