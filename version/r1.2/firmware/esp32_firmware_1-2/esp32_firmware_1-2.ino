@@ -103,7 +103,7 @@ void setup() {
   pinMode(CAMERA_RST_PIN, OUTPUT);   // Set the camera reset pin // Causes crash
 
   // Light Sleep setup
-  //esp_sleep_enable_ext0_wakeup(ESP_WAKEUP_PIN, 1);  // Wake up ESP32 when GPIO1 is HIGH //STM will always pull GIO1 high when speeds above 5 mph are detected. Will pull low when speeds
+  esp_sleep_enable_ext0_wakeup(ESP_WAKEUP_PIN, 1);  // Wake up ESP32 when GPIO1 is HIGH //STM will always pull GIO1 high when speeds above 5 mph are detected. Will pull low when speeds
 
   // Setup Camera
   cameraPowerOn();
