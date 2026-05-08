@@ -86,12 +86,13 @@ void textPasswordCall(Control* sender, int type) {
 void buttonSaveNetworkCall(Control* sender, int type) {
   if (type == B_UP) {
     Serial.println("Button Pressed");
-    String ssid = ESPUI.getControl(wifi_ssid_text)->value;
-    String pass = ESPUI.getControl(wifi_pass_text)->value;
-    String camera_id = ESPUI.getControl(camera_id_text)->value;
-    preferences.putString("ssid", ssid);
-    preferences.putString("pass", pass);
-    preferences.putString("camera_id", camera_id);
+    // Renamed to avoid shadowing the globals declared in variables.h.
+    String new_ssid = ESPUI.getControl(wifi_ssid_text)->value;
+    String new_pass = ESPUI.getControl(wifi_pass_text)->value;
+    String new_camera_id = ESPUI.getControl(camera_id_text)->value;
+    preferences.putString("ssid", new_ssid);
+    preferences.putString("pass", new_pass);
+    preferences.putString("camera_id", new_camera_id);
     ESP.restart();
   }
 }

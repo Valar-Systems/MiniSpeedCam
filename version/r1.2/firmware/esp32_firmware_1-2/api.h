@@ -136,8 +136,10 @@ void wifiResetButton() {
     delay(3000);                               // delay 3 seconds
     if (digitalRead(WIFI_RESET_PIN) == LOW) {  // Confirm button press
       Serial.println("Reset button pressed. Resetting Wi-Fi...");
-      preferences.putString("ssid", "ssid");  // This replaces the stored wifi network with a random value
-      preferences.putString("pass", "pass");  // This replaces the stored wifi network with a random value
+      // Match the sentinel used by buttonClearNetworkCall so connectWifiAP
+      // takes the AP-fallback path on next boot.
+      preferences.putString("ssid", "NOT_SET");
+      preferences.putString("pass", "NOT_SET");
       ESP.restart();
     }
   }
@@ -256,7 +258,9 @@ void sendPhoto(void) {
     delay(100);
     Serial.println("waiting on data");
   }
-  speed_actual = maxSpeed;
+  // Round to nearest int so the wire format stays "25" rather than "25.70"
+  // (Arduino's String += float defaults to two decimal places).
+  speed_actual = (int)(maxSpeed + 0.5f);
 
   String httpsRequestSend;
 
@@ -269,7 +273,9 @@ void sendPhoto(void) {
     https.addHeader("Authorization", recv_token);         // Adding Bearer token as HTTP header
     https.addHeader("Content-Type", "application/json");  // Adding Bearer token as HTTP header
 
-    httpsRequestData.reserve(150000);
+    // Reserve up the request buffer once: a UXGA JPEG base64-encodes to
+    // roughly 100KB+, and without this the String reallocates many times.
+    httpsRequestSend.reserve(150000);
     httpsRequestSend = "{\"send_photo\":\"";
     httpsRequestSend += send_photo_text;
     httpsRequestSend += "\",\"camera\":\"";
@@ -313,6 +319,10 @@ void sendPhoto(void) {
   // Free resources
   https.end();
   delete client;
+
+  // Release the ~100KB base64 buffer back to the heap; otherwise it lingers
+  // until the next capture overwrites it.
+  photo_base64 = String();
 
   //Don't disconnect wifi during first two minutes of bootup
   if (wake_flag == false) {

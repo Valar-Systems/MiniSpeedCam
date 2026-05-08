@@ -101,6 +101,9 @@ void setup() {
   // Connect CDM324 sensor
   Serial.println("Connecting CDM324");
   Serial1.begin(1000000, SERIAL_8N1, RX_GPIO, TX_GPIO);
+  // Bound the parseFloat() wait in get_speed() so a missed STM32 reply
+  // can't stall the radar polling loop for a full second.
+  Serial1.setTimeout(50);
   Serial.setDebugOutput(false);
 
   // Reset CDM324
@@ -115,8 +118,9 @@ void setup() {
   // Send local IP address to API if connected to internet
   sendLocalIP();
 
-  // Put device to sleep after 120 seconds after setup
-  sleep_time = millis() + 10000;  //120000
+  // Post-boot grace window: keep WiFi alive for 120s so the user has time
+  // to reach the ESPUI portal before the idle path tears the radio down.
+  sleep_time = millis() + 120000;
   wake_flag = true;
 
   // ignore device measurements for 5 seconds after startup
@@ -198,7 +202,7 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
       if (millis() >= sleep_time) {              // Only if 120 seconds passed
         if (digitalRead(ESP_WAKEUP_PIN) == 0) {  // Only if STM not measuring data
           wake_flag = false;
-          Serial.println("Going to sleep 1");  // Go to sleep
+          Serial.println("Grace window over: powering down WiFi");
 
           //esp_light_sleep_start(); // Do not sleep in version 1.1
           WiFi.disconnect(true);  // Disconnect from network, optionally true to remove credentials
@@ -219,7 +223,7 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
       if (speed == 0) {  // Check if speed is 0
         if (currentMillis - previousMillis >= interval) {
           previousMillis = currentMillis;      // Save the last time
-          Serial.println("Going to sleep 2");  // Go to sleep
+          Serial.println("Idle 5s with no radar activity: powering down WiFi");
 
           //esp_light_sleep_start(); // Do not Go to sleep on R1.1 because USB will disconnect
           WiFi.disconnect(true);  // Disconnect from network, optionally true to remove credentials

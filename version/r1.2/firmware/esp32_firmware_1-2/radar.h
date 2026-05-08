@@ -16,28 +16,28 @@ void issue_cdm324_reset(void);
 /**
  * Query the STM32 for the most recent speed sample.
  *
+ * Drains any leftover bytes (a previous reply we never read), issues the
+ * unit-specific command, then blocks in parseFloat() up to Serial1's
+ * configured timeout (set in setup() via Serial1.setTimeout) waiting for
+ * the response. Without the drain the buffer would always lag by one
+ * cycle since the original code checked available() before the STM32
+ * had a chance to reply.
+ *
  * @param kmh  true = request KPH, false = request MPH.
- * @return     Speed in the requested units. Returns 0 if the STM32 did
- *             not have data ready when polled.
+ * @return     Speed in the requested units (one decimal of resolution),
+ *             or 0 if the STM32 did not respond before the timeout.
  */
 float get_speed(bool kmh) {
-  if (kmh == true) {
-    // Query km/h * 10
-    Serial1.print('k');
-  } else {
-    // Query mph * 10
-    Serial1.print('m');
+  // Drop any stale bytes from a previous unanswered query so parseFloat
+  // doesn't pick up data that belongs to an earlier command.
+  while (Serial1.available() > 0) {
+    Serial1.read();
   }
 
-  float speed = 0;
-  if (Serial1.available() > 0) {
-    speed = Serial1.parseFloat();
-  } else {
-    Serial.println("NO DATA");
-  }
+  Serial1.print(kmh ? 'k' : 'm');
 
-  // STM32 reports speed * 10 as an integer-style ASCII float; scale back to a real value.
-  return (speed / 10);
+  // STM32 reports speed * 10 as an ASCII float; scale back to a real value.
+  return Serial1.parseFloat() / 10.0f;
 }
 
 /**

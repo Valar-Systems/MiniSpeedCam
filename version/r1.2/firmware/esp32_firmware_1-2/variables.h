@@ -8,7 +8,7 @@
  */
 
 // --- Live measurement / control state ---
-int speed;                                   // Latest speed sample read from the STM32 (MPH or KPH per is_kph)
+float speed = 0.0f;                          // Latest speed sample read from the STM32 (MPH or KPH per is_kph)
 bool API_photo;                              // (reserved) photo-via-API flag
 bool send_data;                              // Core 1 -> Core 0: a fresh photo is captured, please upload it
 int min_speed;                               // Minimum speed (configured units) that begins a tracking run
@@ -19,7 +19,7 @@ bool photo_finished;                         // (reserved) photo-capture-complet
 bool speed_collection_complete = false;      // Core 1 sets true once the per-vehicle max speed is finalized
 bool is_kph;                                 // true = KPH units, false = MPH (persisted in NVS)
 bool send_photo;                             // true = upload included a photo (vehicle was speeding)
-int maxSpeed;                                // Highest speed observed during the current tracking run
+float maxSpeed = 0.0f;                       // Highest speed observed during the current tracking run (0.1 resolution from STM32)
 
 // --- WiFi / cloud credentials (persisted in NVS) ---
 String ssid;                                 // Stored WiFi SSID, "NOT_SET" until configured
