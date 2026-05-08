@@ -44,33 +44,42 @@ float get_speed(bool kmh) {
  * Reset the STM32 and consume its boot banner.
  *
  * Drives STM32_RESET_PIN low for 20ms, then reads bytes off UART1 until
- * a newline (or the buffer fills) so the next get_speed() starts from
- * a clean RX queue. The banner is echoed on Serial for debugging.
+ * a newline, the buffer fills, or the timeout elapses. Bounding the wait
+ * matters because this runs from setup(), before the task watchdog has
+ * any subscribers - a silent STM32 (unprogrammed, dead, or wired wrong)
+ * would otherwise wedge the boot indefinitely.
  */
 void issue_cdm324_reset() {
   bool string_received = false;
   char receive_buffer[50];
   int index = 0;
 
-  // 20ms reset
+  // 20ms reset pulse
   digitalWrite(STM32_RESET_PIN, LOW);
   delay(20);
   digitalWrite(STM32_RESET_PIN, HIGH);
 
-  // get string
-  while (string_received == false) {
+  const unsigned long banner_timeout_ms = 1000;
+  const unsigned long start = millis();
+
+  while (!string_received && (millis() - start) < banner_timeout_ms) {
     if (Serial1.available() > 0) {
       char bla = Serial1.read();
       if (index >= (int)sizeof(receive_buffer) - 1) {
         break;  // Buffer full; bail out before we overflow.
       }
       receive_buffer[index++] = bla;
-      if (bla == '\n')
+      if (bla == '\n') {
         string_received = true;
+      }
     }
   }
   receive_buffer[index] = 0;
 
-  Serial.println("Received from the CDM324:");
-  Serial.println(receive_buffer);
+  if (string_received) {
+    Serial.println("Received from the CDM324:");
+    Serial.println(receive_buffer);
+  } else {
+    Serial.println("Timed out waiting for CDM324 banner; continuing anyway");
+  }
 }

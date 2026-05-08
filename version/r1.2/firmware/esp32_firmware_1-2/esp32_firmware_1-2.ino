@@ -28,6 +28,7 @@
 #include <esp_camera.h>
 #include <DNSServer.h>
 #include <ESPmDNS.h>
+#include <ArduinoOTA.h>
 #include <ESPUI.h>
 #include <Preferences.h>
 
@@ -139,6 +140,12 @@ void setup() {
 
   // Send local IP address to API if connected to internet
   sendLocalIP();
+
+  // Bring up ArduinoOTA so fielded firmware can be updated without USB.
+  // Only meaningful in STA mode (the AP fallback is for first-time setup
+  // before any firmware has shipped). The 120s grace window below keeps
+  // WiFi alive long enough to push an update right after a reboot.
+  setupOTA();
 
   // Post-boot grace window: keep WiFi alive for 120s so the user has time
   // to reach the ESPUI portal before the idle path tears the radio down.
@@ -363,6 +370,10 @@ void taskCore0(void* parameter) {
   esp_task_wdt_add(NULL);
   while (1) {
     esp_task_wdt_reset();
+
+    // Service OTA before the (potentially blocking) HTTPS upload so an
+    // in-progress flash isn't delayed behind a 5s POST.
+    ArduinoOTA.handle();
 
     if (send_data == true) {
       sendPhoto();

@@ -120,6 +120,48 @@ void connectWifi() {
 }
 
 /**
+ * Bring up ArduinoOTA so firmware can be flashed over WiFi.
+ *
+ * Only enabled in STA mode (the AP fallback is for initial setup, not
+ * for OTA). Reuses the per-device MAC-derived password as the OTA auth
+ * password so a LAN attacker can't push arbitrary firmware. Requires
+ * ArduinoOTA.handle() to be serviced from taskCore0 to actually accept
+ * uploads.
+ */
+void setupOTA() {
+  if (WiFi.getMode() != WIFI_STA || WiFi.status() != WL_CONNECTED) {
+    Serial.println("OTA disabled (not connected in STA mode)");
+    return;
+  }
+
+  ArduinoOTA.setHostname(HOSTNAME);
+  ArduinoOTA.setPassword(espui_password.c_str());
+
+  ArduinoOTA.onStart([]() {
+    Serial.println("OTA: upload starting");
+  });
+  ArduinoOTA.onEnd([]() {
+    Serial.println("\nOTA: upload complete, rebooting");
+  });
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    // Heartbeat the WDT during the long flash write so the upload doesn't
+    // trip the 30s timeout on slow links.
+    esp_task_wdt_reset();
+    Serial.printf("OTA: %u%%\r", (progress * 100) / total);
+  });
+  ArduinoOTA.onError([](ota_error_t error) {
+    Serial.printf("OTA error %u\n", error);
+  });
+
+  ArduinoOTA.begin();
+  Serial.print("OTA ready at ");
+  Serial.print(WiFi.localIP());
+  Serial.print(" (host ");
+  Serial.print(HOSTNAME);
+  Serial.println(")");
+}
+
+/**
  * Tear down the WiFi radio entirely.
  *
  * Used by sleep paths where we want the radio off until the next radar
