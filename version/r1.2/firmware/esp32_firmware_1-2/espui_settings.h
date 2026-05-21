@@ -65,6 +65,11 @@ void textCameraIdCall(Control* sender, int type) {
 // Leave blank
 }
 
+// API token is also persisted on Save; nothing to do per keystroke.
+void textApiTokenCall(Control* sender, int type) {
+// Leave blank
+}
+
 // SSID is read on Save (see buttonSaveNetworkCall); no live update needed.
 void textNetworkCall(Control* sender, int type) {
   //    ssid = sender->value;
@@ -86,12 +91,15 @@ void textPasswordCall(Control* sender, int type) {
 void buttonSaveNetworkCall(Control* sender, int type) {
   if (type == B_UP) {
     Serial.println("Button Pressed");
-    String ssid = ESPUI.getControl(wifi_ssid_text)->value;
-    String pass = ESPUI.getControl(wifi_pass_text)->value;
-    String camera_id = ESPUI.getControl(camera_id_text)->value;
-    preferences.putString("ssid", ssid);
-    preferences.putString("pass", pass);
-    preferences.putString("camera_id", camera_id);
+    // Renamed to avoid shadowing the globals declared in variables.h.
+    String new_ssid = ESPUI.getControl(wifi_ssid_text)->value;
+    String new_pass = ESPUI.getControl(wifi_pass_text)->value;
+    String new_camera_id = ESPUI.getControl(camera_id_text)->value;
+    String new_api_token = ESPUI.getControl(api_token_text)->value;
+    preferences.putString("ssid", new_ssid);
+    preferences.putString("pass", new_pass);
+    preferences.putString("camera_id", new_camera_id);
+    preferences.putString("api_token", new_api_token);
     ESP.restart();
   }
 }
@@ -113,21 +121,76 @@ void buttonClearNetworkCall(Control* sender, int type) {
 }
 
 /**
+ * Refresh the read-only labels on the Status tab.
+ *
+ * Called from taskCore1 on a ~1Hz cadence (slower than the radar polling
+ * loop so we don't flood the WebSocket connection ESPUI uses to push
+ * value updates to connected browsers). All values are derived from
+ * existing globals + the WiFi driver.
+ */
+void updateStatusUI(void) {
+  String unit = is_kph ? " kph" : " mph";
+
+  ESPUI.updateLabel(status_speed_label, String(speed, 1) + unit);
+  ESPUI.updateLabel(status_max_label, String(maxSpeed, 1) + unit);
+
+  String upload_status;
+  if (sending_data) {
+    upload_status = "Uploading...";
+  } else if (httpsResponseCode == 0) {
+    upload_status = "No uploads yet";
+  } else if (httpsResponseCode > 0) {
+    upload_status = "OK (" + String(httpsResponseCode) + ")";
+  } else {
+    upload_status = "Failed (" + String(httpsResponseCode) + ")";
+  }
+  ESPUI.updateLabel(status_upload_label, upload_status);
+
+  String wifi_status;
+  wifi_mode_t mode = WiFi.getMode();
+  if (mode == WIFI_AP) {
+    wifi_status = "AP mode (configuration)";
+  } else if (mode == WIFI_OFF) {
+    wifi_status = "Radio off (idle)";
+  } else if (WiFi.status() == WL_CONNECTED) {
+    wifi_status = WiFi.SSID() + " (" + String(WiFi.RSSI()) + " dBm)";
+  } else {
+    wifi_status = "Disconnected";
+  }
+  ESPUI.updateLabel(status_wifi_label, wifi_status);
+
+  unsigned long sec = millis() / 1000;
+  char buf[32];
+  snprintf(buf, sizeof(buf), "%luh %lum %lus", sec / 3600, (sec % 3600) / 60, sec % 60);
+  ESPUI.updateLabel(status_uptime_label, String(buf));
+}
+
+/**
  * Build the ESPUI control tree and start serving it.
  *
- * Tab 1 ("Device"):
+ * Tab 1 ("Status"): live read-only telemetry, refreshed by updateStatusUI.
+ *
+ * Tab 2 ("Device"):
  *   - MPH/KPH switcher
  *   - Minimum speed (run threshold)
  *   - Photo speed (capture threshold)
  *
- * Tab 2 ("Wifi Settings"):
+ * Tab 3 ("Wifi Settings"):
  *   - Clear Settings button
- *   - Network / Password / Camera ID text inputs
+ *   - Network / Password / Camera ID / API Token text inputs
  *   - Save Settings button
  */
 void load_espui(void) {
+  uint16_t tab_status = ESPUI.addControl(ControlType::Tab, "Status", "Status");
   uint16_t tab1 = ESPUI.addControl(ControlType::Tab, "Device", "Device");
   uint16_t tab2 = ESPUI.addControl(ControlType::Tab, "Wifi Settings", "Wifi Settings");
+
+  // tab_status: read-only telemetry, updated from taskCore1 each second.
+  status_speed_label  = ESPUI.addControl(ControlType::Label, "Current Speed", "--", ControlColor::Turquoise, tab_status);
+  status_max_label    = ESPUI.addControl(ControlType::Label, "Last Run Max", "--", ControlColor::Turquoise, tab_status);
+  status_upload_label = ESPUI.addControl(ControlType::Label, "Last Upload",  "--", ControlColor::Turquoise, tab_status);
+  status_wifi_label   = ESPUI.addControl(ControlType::Label, "WiFi",          "--", ControlColor::Turquoise, tab_status);
+  status_uptime_label = ESPUI.addControl(ControlType::Label, "Uptime",        "--", ControlColor::Turquoise, tab_status);
 
   //tab1: Device settings
   ESPUI.addControl(ControlType::Switcher, "MPH/KPH:", String(is_kph), ControlColor::Alizarin, tab1, &speedUnitsCall);
@@ -145,6 +208,7 @@ void load_espui(void) {
   wifi_ssid_text = ESPUI.addControl(ControlType::Text, "Network", String(ssid), ControlColor::Emerald, tab2, &textNetworkCall); //Text: Network
   wifi_pass_text = ESPUI.addControl(ControlType::Text, "Password", String(password), ControlColor::Emerald, tab2, &textPasswordCall); //Text: Password
   camera_id_text = ESPUI.addControl(ControlType::Text, "Camera ID:", String(camera_id), ControlColor::Peterriver, tab2, &textCameraIdCall); //Text: Camera ID
+  api_token_text = ESPUI.addControl(ControlType::Text, "API Token:", String(api_token), ControlColor::Peterriver, tab2, &textApiTokenCall); //Text: API token (rotatable)
 
   //Button: Save
   ESPUI.addControl(ControlType::Button, "Save Settings", "SAVE", ControlColor::Emerald, tab2, &buttonSaveNetworkCall);
@@ -158,13 +222,8 @@ void load_espui(void) {
   // Enable this option if you want sliders to be continuous (update during move) and not discrete (update on stop)
   // ESPUI.sliderContinuous = true;
 
-  /*
-     * Optionally you can use HTTP BasicAuth. Keep in mind that this is NOT a
-     * SECURE way of limiting access.
-     * Anyone who is able to sniff traffic will be able to intercept your password
-     * since it is transmitted in cleartext. Just add a string as username and
-     * password, for example begin("ESPUI Control", "username", "password")
-     */
-
-  ESPUI.begin("ESPUI Control");
+  // HTTP basic auth - cleartext over plain HTTP, but combined with the
+  // soft-AP's WPA2 PSK or the user's home-WiFi WPA2 it's a meaningful
+  // barrier against casual LAN-side configuration tampering.
+  ESPUI.begin("MiniSpeedCam", "admin", espui_password.c_str());
 }

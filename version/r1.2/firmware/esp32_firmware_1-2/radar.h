@@ -16,61 +16,70 @@ void issue_cdm324_reset(void);
 /**
  * Query the STM32 for the most recent speed sample.
  *
+ * Drains any leftover bytes (a previous reply we never read), issues the
+ * unit-specific command, then blocks in parseFloat() up to Serial1's
+ * configured timeout (set in setup() via Serial1.setTimeout) waiting for
+ * the response. Without the drain the buffer would always lag by one
+ * cycle since the original code checked available() before the STM32
+ * had a chance to reply.
+ *
  * @param kmh  true = request KPH, false = request MPH.
- * @return     Speed in the requested units. Returns 0 if the STM32 did
- *             not have data ready when polled.
+ * @return     Speed in the requested units (one decimal of resolution),
+ *             or 0 if the STM32 did not respond before the timeout.
  */
 float get_speed(bool kmh) {
-  if (kmh == true) {
-    // Query km/h * 10
-    Serial1.print('k');
-  } else {
-    // Query mph * 10
-    Serial1.print('m');
+  // Drop any stale bytes from a previous unanswered query so parseFloat
+  // doesn't pick up data that belongs to an earlier command.
+  while (Serial1.available() > 0) {
+    Serial1.read();
   }
 
-  float speed = 0;
-  if (Serial1.available() > 0) {
-    speed = Serial1.parseFloat();
-  } else {
-    Serial.println("NO DATA");
-  }
+  Serial1.print(kmh ? 'k' : 'm');
 
-  // STM32 reports speed * 10 as an integer-style ASCII float; scale back to a real value.
-  return (speed / 10);
+  // STM32 reports speed * 10 as an ASCII float; scale back to a real value.
+  return Serial1.parseFloat() / 10.0f;
 }
 
 /**
  * Reset the STM32 and consume its boot banner.
  *
  * Drives STM32_RESET_PIN low for 20ms, then reads bytes off UART1 until
- * a newline (or the buffer fills) so the next get_speed() starts from
- * a clean RX queue. The banner is echoed on Serial for debugging.
+ * a newline, the buffer fills, or the timeout elapses. Bounding the wait
+ * matters because this runs from setup(), before the task watchdog has
+ * any subscribers - a silent STM32 (unprogrammed, dead, or wired wrong)
+ * would otherwise wedge the boot indefinitely.
  */
 void issue_cdm324_reset() {
   bool string_received = false;
   char receive_buffer[50];
   int index = 0;
 
-  // 20ms reset
+  // 20ms reset pulse
   digitalWrite(STM32_RESET_PIN, LOW);
   delay(20);
   digitalWrite(STM32_RESET_PIN, HIGH);
 
-  // get string
-  while (string_received == false) {
+  const unsigned long banner_timeout_ms = 1000;
+  const unsigned long start = millis();
+
+  while (!string_received && (millis() - start) < banner_timeout_ms) {
     if (Serial1.available() > 0) {
       char bla = Serial1.read();
       if (index >= (int)sizeof(receive_buffer) - 1) {
         break;  // Buffer full; bail out before we overflow.
       }
       receive_buffer[index++] = bla;
-      if (bla == '\n')
+      if (bla == '\n') {
         string_received = true;
+      }
     }
   }
   receive_buffer[index] = 0;
 
-  Serial.println("Received from the CDM324:");
-  Serial.println(receive_buffer);
+  if (string_received) {
+    Serial.println("Received from the CDM324:");
+    Serial.println(receive_buffer);
+  } else {
+    Serial.println("Timed out waiting for CDM324 banner; continuing anyway");
+  }
 }

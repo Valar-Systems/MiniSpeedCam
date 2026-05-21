@@ -28,14 +28,22 @@
 #include <esp_camera.h>
 #include <DNSServer.h>
 #include <ESPmDNS.h>
+#include <ArduinoOTA.h>
 #include <ESPUI.h>
 #include <Preferences.h>
 
 #include "soc/soc.h"           // Disable brownout problems
 #include "soc/rtc_cntl_reg.h"  // Disable brownout problems
 #include "driver/rtc_io.h"
+#include "esp_task_wdt.h"      // Per-task watchdog for the two pinned loops
 #include "SPIFFS.h"
 #include "Base64.h"
+
+// Task watchdog timeout. Long enough to cover HTTPS connect + send (each
+// capped at 5s in api.h) plus the 3s wifiResetButton blocking poll, with
+// margin. If a task fails to reset the WDT within this window the chip
+// panics and reboots, so a wedged radar drain or stuck POST recovers.
+#define WDT_TIMEOUT_S 30
 
 // --- GPIO assignments (board revision 1.2) ---
 #define STM32_RESET_PIN GPIO_NUM_47  // Drives STM32 NRST low to reset the radar MCU
@@ -56,8 +64,6 @@ Preferences preferences;  // NVS-backed key/value store for WiFi creds and user 
 #include "api.h"
 #include "espui_settings.h"
 
-DNSServer dnsServer;  // Captive-DNS used in AP mode so any URL hits the ESPUI portal
-
 TaskHandle_t Task0;  // Handle for the Core 0 task (HTTPS uploads / WiFi reconnect)
 TaskHandle_t Task1;  // Handle for the Core 1 task (radar polling / sleep / DNS)
 
@@ -71,6 +77,34 @@ TaskHandle_t Task1;  // Handle for the Core 1 task (radar polling / sleep / DNS)
  */
 void setup() {
   Serial.begin(115200);
+
+  // Derive a stable per-device password from the WiFi MAC. 8 hex chars
+  // satisfies WPA2's 8-char minimum; same string is reused for ESPUI auth.
+  {
+    uint8_t mac[6];
+    WiFi.macAddress(mac);
+    char buf[9];
+    snprintf(buf, sizeof(buf), "%02X%02X%02X%02X", mac[2], mac[3], mac[4], mac[5]);
+    espui_password = String(buf);
+  }
+  Serial.print("Soft-AP / ESPUI password: ");
+  Serial.println(espui_password);
+
+  // Reconfigure the task watchdog with our timeout before either pinned
+  // task subscribes. The init API differs between Arduino-ESP32 2.x
+  // (IDF 4: timeout-seconds + bool) and 3.x (IDF 5: config struct).
+  // deinit is safe even if the WDT was never inited.
+  esp_task_wdt_deinit();
+#if ESP_IDF_VERSION_MAJOR >= 5
+  esp_task_wdt_config_t wdt_config = {
+    .timeout_ms = WDT_TIMEOUT_S * 1000,
+    .idle_core_mask = 0,
+    .trigger_panic = true,
+  };
+  esp_task_wdt_init(&wdt_config);
+#else
+  esp_task_wdt_init(WDT_TIMEOUT_S, true);
+#endif
 
   // GPIO setup
   pinMode(ESP_WAKEUP_PIN, INPUT);
@@ -94,6 +128,10 @@ void setup() {
   ssid = preferences.getString("ssid", "NOT_SET");
   password = preferences.getString("pass", "NOT_SET");
   camera_id = preferences.getString("camera_id", "NOT_SET");  // Create an account and camera at tachtracker.com
+  // Default falls back to the original baked-in token so devices flashed
+  // before this change keep working without manual configuration; the
+  // operator can rotate it from the ESPUI portal afterward.
+  api_token = preferences.getString("api_token", "bc6d8bd23bbeb6b13fa67448c244a129");
   min_speed = preferences.getInt("min_speed", 3);             // The minimum speed (MPH) that the tracker should track any vehicle and upload data
   photo_speed = preferences.getInt("photo_speed", 10);        // Cars speed (MPH) when photo should be taken
   is_kph = preferences.getBool("is_kph", 0);                  // Cars speed (MPH) when photo should be taken
@@ -101,6 +139,9 @@ void setup() {
   // Connect CDM324 sensor
   Serial.println("Connecting CDM324");
   Serial1.begin(1000000, SERIAL_8N1, RX_GPIO, TX_GPIO);
+  // Bound the parseFloat() wait in get_speed() so a missed STM32 reply
+  // can't stall the radar polling loop for a full second.
+  Serial1.setTimeout(50);
   Serial.setDebugOutput(false);
 
   // Reset CDM324
@@ -115,8 +156,15 @@ void setup() {
   // Send local IP address to API if connected to internet
   sendLocalIP();
 
-  // Put device to sleep after 120 seconds after setup
-  sleep_time = millis() + 10000;  //120000
+  // Bring up ArduinoOTA so fielded firmware can be updated without USB.
+  // Only meaningful in STA mode (the AP fallback is for first-time setup
+  // before any firmware has shipped). The 120s grace window below keeps
+  // WiFi alive long enough to push an update right after a reboot.
+  setupOTA();
+
+  // Post-boot grace window: keep WiFi alive for 120s so the user has time
+  // to reach the ESPUI portal before the idle path tears the radio down.
+  sleep_time = millis() + 120000;
   wake_flag = true;
 
   // ignore device measurements for 5 seconds after startup
@@ -172,9 +220,19 @@ const long interval = 5000;        // Idle window (ms) of zero-speed before slee
  *   7. Polls the WiFi-reset button.
  */
 void taskCore1(void* parameter) {  // Code for task running on Core 1
+  esp_task_wdt_add(NULL);          // Subscribe this task to the watchdog
+  unsigned long last_status_push = 0;  // ms timestamp of last ESPUI status refresh
   while (1) {                      // Loop indefinitely
+    esp_task_wdt_reset();          // Heartbeat the watchdog each cycle
 
     dnsServer.processNextRequest();  // Process request for ESPUI
+
+    // Push status-tab updates at ~1Hz; the radar loop runs at 10Hz which
+    // is too fast for the ESPUI WebSocket and would just queue updates.
+    if (millis() - last_status_push >= 1000) {
+      last_status_push = millis();
+      updateStatusUI();
+    }
 
     if (ignore_flag == true) {
       if (millis() >= ignore_time) {
@@ -198,11 +256,18 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
       if (millis() >= sleep_time) {              // Only if 120 seconds passed
         if (digitalRead(ESP_WAKEUP_PIN) == 0) {  // Only if STM not measuring data
           wake_flag = false;
-          Serial.println("Going to sleep 1");  // Go to sleep
 
-          esp_light_sleep_start(); // 
-          WiFi.disconnect(true);  // Disconnect from network, optionally true to remove credentials
-          WiFi.mode(WIFI_OFF);    // Set Wi-Fi mode to OFF
+          // Only tear the radio down when we're actually associated to a
+          // network. In AP-fallback mode the user may still be configuring
+          // WiFi via the captive portal, so leave the AP up.
+          if (WiFi.getMode() != WIFI_AP) {
+            Serial.println("Grace window over: powering down WiFi");
+            esp_light_sleep_start(); // Do not sleep in version 1.1
+            //WiFi.disconnect(true);  // wifioff=true; second arg defaults false so creds are kept
+            //WiFi.mode(WIFI_OFF);
+          } else {
+            Serial.println("Grace window over: keeping soft-AP up for configuration");
+          }
 
           // Add power camera off to save battery
           // To initiate hardware power-down, the PWDN pin must be tied to high.
@@ -219,11 +284,15 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
       if (speed == 0) {  // Check if speed is 0
         if (currentMillis - previousMillis >= interval) {
           previousMillis = currentMillis;      // Save the last time
-          Serial.println("Going to sleep 2");  // Go to sleep
 
-          esp_light_sleep_start(); 
-          WiFi.disconnect(true);  // Disconnect from network, optionally true to remove credentials
-          WiFi.mode(WIFI_OFF);    // Set Wi-Fi mode to OFF
+          // Same AP-aware guard as the grace-window path above; keep the
+          // captive portal alive while the user is configuring.
+          if (WiFi.getMode() != WIFI_AP) {
+            Serial.println("Idle 5s with no radar activity: powering down WiFi");
+            esp_light_sleep_start(); // Do not Go to sleep on R1.1 because USB will disconnect
+            //WiFi.disconnect(true);
+            //WiFi.mode(WIFI_OFF);
+          }
           previousMillis = millis();
 
           // Add power camera off to save battery
@@ -253,11 +322,14 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
         delay(100);
         maxSpeed = 0;  // Tracks the max speed during the entire duraton of tracking
         bool collect_data_point = true;
+        bool photo_captured = false;
         send_data = false;
         send_photo = false;
         speed_collection_complete = false;  // Don't send data until photo is finished
 
         while (speed >= min_speed) {  // Capture the cars maximum speed during the entire drive. Then reset back to zero. Send this max speed.
+          esp_task_wdt_reset();  // Long passes can exceed WDT_TIMEOUT_S; heartbeat per cycle
+
           if (is_kph == true) {
             speed = get_speed(true);  // Get speed (KPH) from STM32 via UART
           } else {
@@ -272,9 +344,11 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
 
           if ((maxSpeed >= photo_speed) && (collect_data_point == true)) {  // Only take a photo if one is not already in progress
             Serial.println("Taking photo_speed photo");
-            takePhoto();
-            send_data = true;            // Process photo on Core 0
-            collect_data_point = false;  // flag that activates photo only one time
+            photo_captured = takePhoto();
+            if (!photo_captured) {
+              Serial.println("Capture failed; will not retry this run");
+            }
+            collect_data_point = false;  // give up on the photo for this run either way
           }
 
           delay(100);
@@ -283,12 +357,18 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
         Serial.print("MAX maxSpeed: ");
         Serial.println(maxSpeed);
 
-        if (maxSpeed >= photo_speed) {
+        // Only flag a photo upload if we actually have one. A speeding pass
+        // with a failed capture falls through to the speed-only endpoint.
+        if (maxSpeed >= photo_speed && photo_captured) {
           send_photo = true;
         }
-
-        send_API = true;
-        speed_collection_complete = true;  // Signal to httpsSend task to send data
+        // Every pass that crossed min_speed gets uploaded - photo runs hit
+        // the speeding endpoint, all others (under photo_speed or failed
+        // capture) go to the non_speeding endpoint with just the speed.
+        // Order matters: send_photo must be set before speed_collection_complete
+        // so sendPhoto() picks the right endpoint after its wait loop unblocks.
+        send_data = true;
+        speed_collection_complete = true;
 
         previousMillis = millis();
       }
@@ -310,7 +390,13 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
  * triggers a (re)connection attempt.
  */
 void taskCore0(void* parameter) {
+  esp_task_wdt_add(NULL);
   while (1) {
+    esp_task_wdt_reset();
+
+    // Service OTA before the (potentially blocking) HTTPS upload so an
+    // in-progress flash isn't delayed behind a 5s POST.
+    ArduinoOTA.handle();
 
     if (send_data == true) {
       sendPhoto();

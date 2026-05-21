@@ -55,7 +55,15 @@ void connectWifiAP() {
     Serial.println("\nCreating access point...");
     WiFi.mode(WIFI_AP);
     WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
-    WiFi.softAP(HOSTNAME);
+    // WPA2 with the per-device MAC-derived password (printed at boot in
+    // setup()). Prevents anyone in radio range from joining and rewriting
+    // the user's stored WiFi credentials via the captive portal.
+    WiFi.softAP(HOSTNAME, espui_password.c_str());
+
+    // Resolve every host to the soft-AP IP so phones/laptops detect the
+    // captive portal and the user lands on the ESPUI page automatically.
+    // Paired with dnsServer.processNextRequest() in taskCore1.
+    dnsServer.start(53, "*", IPAddress(192, 168, 4, 1));
 
     connect_timeout = 20;
     do {
@@ -90,7 +98,8 @@ void connectWifi() {
   // try to connect to existing network
   Serial.println("\n\nTry to connect to existing network");
   Serial.println(ssid);
-  Serial.println(password);
+  // Intentionally not logging `password` to avoid leaking the WiFi PSK
+  // to anyone with USB serial access.
   WiFi.begin(ssid, password);
   uint8_t timeout = 100;
 
@@ -108,6 +117,48 @@ void connectWifi() {
   Serial.println("IP address: ");
   local_ip_address = WiFi.localIP().toString();
   Serial.println(local_ip_address);
+}
+
+/**
+ * Bring up ArduinoOTA so firmware can be flashed over WiFi.
+ *
+ * Only enabled in STA mode (the AP fallback is for initial setup, not
+ * for OTA). Reuses the per-device MAC-derived password as the OTA auth
+ * password so a LAN attacker can't push arbitrary firmware. Requires
+ * ArduinoOTA.handle() to be serviced from taskCore0 to actually accept
+ * uploads.
+ */
+void setupOTA() {
+  if (WiFi.getMode() != WIFI_STA || WiFi.status() != WL_CONNECTED) {
+    Serial.println("OTA disabled (not connected in STA mode)");
+    return;
+  }
+
+  ArduinoOTA.setHostname(HOSTNAME);
+  ArduinoOTA.setPassword(espui_password.c_str());
+
+  ArduinoOTA.onStart([]() {
+    Serial.println("OTA: upload starting");
+  });
+  ArduinoOTA.onEnd([]() {
+    Serial.println("\nOTA: upload complete, rebooting");
+  });
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    // Heartbeat the WDT during the long flash write so the upload doesn't
+    // trip the 30s timeout on slow links.
+    esp_task_wdt_reset();
+    Serial.printf("OTA: %u%%\r", (progress * 100) / total);
+  });
+  ArduinoOTA.onError([](ota_error_t error) {
+    Serial.printf("OTA error %u\n", error);
+  });
+
+  ArduinoOTA.begin();
+  Serial.print("OTA ready at ");
+  Serial.print(WiFi.localIP());
+  Serial.print(" (host ");
+  Serial.print(HOSTNAME);
+  Serial.println(")");
 }
 
 /**
@@ -136,8 +187,10 @@ void wifiResetButton() {
     delay(3000);                               // delay 3 seconds
     if (digitalRead(WIFI_RESET_PIN) == LOW) {  // Confirm button press
       Serial.println("Reset button pressed. Resetting Wi-Fi...");
-      preferences.putString("ssid", "ssid");  // This replaces the stored wifi network with a random value
-      preferences.putString("pass", "pass");  // This replaces the stored wifi network with a random value
+      // Match the sentinel used by buttonClearNetworkCall so connectWifiAP
+      // takes the AP-fallback path on next boot.
+      preferences.putString("ssid", "NOT_SET");
+      preferences.putString("pass", "NOT_SET");
       ESP.restart();
     }
   }
@@ -175,8 +228,10 @@ void sendLocalIP() {
     //WiFiClient client;
     HTTPClient https;
 
-    String recv_token = "bc6d8bd23bbeb6b13fa67448c244a129";  // Complete Bearer token
-    recv_token = "Bearer " + recv_token;                     // Adding "Bearer " before token
+    // Bearer token is loaded from NVS (default seeded from the original
+    // baked-in value at first boot) so it can be rotated via the ESPUI
+    // portal without reflashing.
+    String recv_token = "Bearer " + api_token;
 
     // Sending POST request
     https.begin(*client, server_local_ip_address);
@@ -256,7 +311,9 @@ void sendPhoto(void) {
     delay(100);
     Serial.println("waiting on data");
   }
-  speed_actual = maxSpeed;
+  // Round to nearest int so the wire format stays "25" rather than "25.70"
+  // (Arduino's String += float defaults to two decimal places).
+  speed_actual = (int)(maxSpeed + 0.5f);
 
   String httpsRequestSend;
 
@@ -269,7 +326,9 @@ void sendPhoto(void) {
     https.addHeader("Authorization", recv_token);         // Adding Bearer token as HTTP header
     https.addHeader("Content-Type", "application/json");  // Adding Bearer token as HTTP header
 
-    httpsRequestData.reserve(150000);
+    // Reserve up the request buffer once: a UXGA JPEG base64-encodes to
+    // roughly 100KB+, and without this the String reallocates many times.
+    httpsRequestSend.reserve(150000);
     httpsRequestSend = "{\"send_photo\":\"";
     httpsRequestSend += send_photo_text;
     httpsRequestSend += "\",\"camera\":\"";
@@ -313,6 +372,10 @@ void sendPhoto(void) {
   // Free resources
   https.end();
   delete client;
+
+  // Release the ~100KB base64 buffer back to the heap; otherwise it lingers
+  // until the next capture overwrites it.
+  photo_base64 = String();
 
   //Don't disconnect wifi during first two minutes of bootup
   if (wake_flag == false) {
