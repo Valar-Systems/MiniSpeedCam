@@ -8,6 +8,7 @@
 #include <DNSServer.h>
 
 #include "camera.h"
+#include "ota.h"
 #include "pins.h"
 #include "variables.h"
 
@@ -17,8 +18,12 @@ extern DNSServer dnsServer;
 
 // Cloud endpoints (Bubble.io workflow URLs on minispeedcam.com). Only
 // referenced from this translation unit.
-static const char* kServerSpeeding       = "https://minispeedcam.com/api/1.1/wf/speeding_capture";
-static const char* kServerNonSpeeding    = "https://minispeedcam.com/api/1.1/wf/non_speeding_capture";
+//
+// kCaptureEndpoint accepts every speed event the firmware uploads -- it
+// always carries the JPEG today, so there is no separate "no-photo"
+// path. (The earlier /speeding_capture and /non_speeding_capture
+// workflows were collapsed into this single one.)
+static const char* kCaptureEndpoint      = "https://minispeedcam.com/api/1.1/wf/capture";
 static const char* kServerLocalIpAddress = "https://minispeedcam.com/api/1.1/wf/local_ip_address";
 
 // Bearer token for the public Bubble.io workflow endpoints.
@@ -54,6 +59,8 @@ void connectWifiAP() {
     if (!MDNS.begin(HOSTNAME)) {
       Serial.println("Error setting up MDNS responder!");
     }
+
+    otaBegin();  // Start ArduinoOTA listener on the freshly-joined network
 
   } else {
     Serial.println("\nCreating access point...");
@@ -109,6 +116,13 @@ void connectWifi() {
   Serial.println("IP address: ");
   net.local_ip_address = WiFi.localIP().toString();
   Serial.println(net.local_ip_address);
+
+  // Refresh the ArduinoOTA listener -- the previous UDP socket was torn
+  // down when WiFi dropped, so begin() needs to run again on each
+  // successful reconnect for OTA to remain reachable.
+  if (WiFi.status() == WL_CONNECTED) {
+    otaBegin();
+  }
 }
 
 /**
@@ -292,19 +306,15 @@ class StreamingUploadBody : public Stream {
 /**
  * Upload the most recent capture to minispeedcam.com.
  *
- * Two endpoints are used depending on whether the run exceeded
- * `radar.photo_speed`:
- *   - kServerSpeeding:     full payload including base64 JPEG.
- *   - kServerNonSpeeding:  speed-only payload (no photo).
- *
- * The speeding branch streams the JPEG straight from the PSRAM-resident
- * framebuffer through StreamingUploadBody; nothing the size of the
- * encoded photo ever sits in regular heap.
- *
- * Blocks until Core 1 finishes computing the per-vehicle max speed
- * (`upload.speed_collection_complete`) so we always upload the highest
- * sample rather than the speed at trigger time. Runs on Core 0 and is
- * gated by `upload.send_data` from Core 1.
+ * Streams the JSON body straight from the PSRAM-resident framebuffer
+ * through StreamingUploadBody so nothing the size of the encoded photo
+ * ever sits in regular heap. Blocks until Core 1 finishes computing
+ * the per-vehicle max speed (`upload.speed_collection_complete`) so we
+ * always upload the highest sample rather than the speed at trigger
+ * time. Runs on Core 0 and is gated by `upload.send_data` from Core 1,
+ * which is only raised when takePhoto() succeeds -- so reaching this
+ * function without a pending framebuffer indicates a logic bug
+ * elsewhere and the upload is aborted defensively.
  */
 void sendPhoto() {
   Serial.println("sendPhoto");
@@ -344,6 +354,15 @@ void sendPhoto() {
     return;
   }
 
+  // Defensive: send_data should never be raised without a pending fb,
+  // but if it ever is we want to release whatever state is around and
+  // not POST a half-built payload.
+  if (!cameraHasPendingPhoto()) {
+    Serial.println("sendPhoto called with no pending framebuffer; aborting");
+    releasePhoto();
+    return;
+  }
+
   WiFiClientSecure* client = new WiFiClientSecure;
   client->setInsecure();
 
@@ -357,64 +376,41 @@ void sendPhoto() {
   }
   int speed_actual = radar.maxSpeed;
 
-  if (upload.send_photo == true && cameraHasPendingPhoto()) {
-    https.begin(*client, kServerSpeeding);
-    https.setConnectTimeout(5000);
-    https.setTimeout(15000);  // base64 upload over WiFi may exceed the 5s used for control APIs
-    https.addHeader("Authorization", recv_token);
-    https.addHeader("Content-Type", "application/json");
+  https.begin(*client, kCaptureEndpoint);
+  https.setConnectTimeout(5000);
+  https.setTimeout(15000);  // base64 upload over WiFi may exceed the 5s used for control APIs
+  https.addHeader("Authorization", recv_token);
+  https.addHeader("Content-Type", "application/json");
 
-    String prologue;
-    prologue.reserve(160);
-    prologue  = "{\"send_photo\":\"true\",\"camera\":\"";
-    prologue += net.camera_id;
-    prologue += "\",\"speed_actual\":\"";
-    prologue += speed_actual;
-    prologue += "\",\"photo\":{\"filename\":\"";
-    prologue += upload.photo_filename;
-    prologue += "\",\"contents\":\"";
+  // The "send_photo" field is hardcoded "true" since the consolidated
+  // endpoint only ever receives speeding events with a photo. It's kept
+  // in the payload so the Bubble workflow can keep the same field shape
+  // it had under the old /speeding_capture URL.
+  String prologue;
+  prologue.reserve(160);
+  prologue  = "{\"send_photo\":\"true\",\"camera\":\"";
+  prologue += net.camera_id;
+  prologue += "\",\"speed_actual\":\"";
+  prologue += speed_actual;
+  prologue += "\",\"photo\":{\"filename\":\"";
+  prologue += upload.photo_filename;
+  prologue += "\",\"contents\":\"";
 
-    const String epilogue = "\"}}";
+  const String epilogue = "\"}}";
 
-    StreamingUploadBody body(prologue,
-                             cameraPendingPhotoData(),
-                             cameraPendingPhotoLength(),
-                             epilogue);
+  StreamingUploadBody body(prologue,
+                           cameraPendingPhotoData(),
+                           cameraPendingPhotoLength(),
+                           epilogue);
 
-    Serial.print("Streaming POST, payload bytes: ");
-    Serial.println(body.totalLength());
-    int http_code = https.sendRequest("POST", &body, body.totalLength());
-    Serial.print("HTTP Response code: ");
-    Serial.println(http_code);
+  Serial.print("Streaming POST, payload bytes: ");
+  Serial.println(body.totalLength());
+  int http_code = https.sendRequest("POST", &body, body.totalLength());
+  Serial.print("HTTP Response code: ");
+  Serial.println(http_code);
 
-    if (http_code > 0) {
-      Serial.println(https.getString());
-    }
-  } else {
-    // No photo on this event: post the speed-only payload to the
-    // dedicated endpoint. Small body, no point in streaming it.
-    https.begin(*client, kServerNonSpeeding);
-    https.setConnectTimeout(5000);
-    https.setTimeout(5000);
-    https.addHeader("Authorization", recv_token);
-    https.addHeader("Content-Type", "application/json");
-
-    String body;
-    body.reserve(256);
-    body  = "{\"send_photo\":\"false\",\"camera\":\"";
-    body += net.camera_id;
-    body += "\",\"speed_actual\":\"";
-    body += speed_actual;
-    body += "\"}";
-
-    Serial.println("Sending POST Request");
-    int http_code = https.POST(body);
-    Serial.print("HTTP Response code: ");
-    Serial.println(http_code);
-
-    if (http_code > 0) {
-      Serial.println(https.getString());
-    }
+  if (http_code > 0) {
+    Serial.println(https.getString());
   }
 
   https.end();

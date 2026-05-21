@@ -21,7 +21,8 @@ esp32_firmware_1-2_platformio/
     ├── camera.{h,cpp}  OV2640 init + JPEG capture (base64-encoded)
     ├── radar.{h,cpp}   UART protocol with the STM32 radar MCU
     ├── api.{h,cpp}     WiFi bring-up + HTTPS uploads to minispeedcam.com
-    └── espui_settings.{h,cpp}  Web-UI controls + NVS persistence
+    ├── espui_settings.{h,cpp}  Web-UI controls + NVS persistence
+    └── ota.{h,cpp}     ArduinoOTA listener + transfer-state flag
 ```
 
 ### Shared state
@@ -53,11 +54,11 @@ pio device monitor      # 115200 baud
 The defaults in `platformio.ini` target an **ESP32-S3-WROOM-1-N8R8**
 (8 MB flash, 8 MB OPI PSRAM). For different modules edit:
 
-| `platformio.ini` key              | Typical value           |
-|-----------------------------------|-------------------------|
-| `board_build.arduino.memory_type` | `qio_opi` (OPI PSRAM)   |
-| `board_upload.flash_size`         | `8MB` / `16MB`          |
-| `board_build.partitions`          | `huge_app.csv`          |
+| `platformio.ini` key              | Typical value             |
+|-----------------------------------|---------------------------|
+| `board_build.arduino.memory_type` | `qio_opi` (OPI PSRAM)     |
+| `board_upload.flash_size`         | `8MB` / `16MB`            |
+| `board_build.partitions`          | `default_8MB.csv` (OTA)   |
 
 If the board uses the on-chip native USB rather than a USB/UART bridge,
 uncomment the `ARDUINO_USB_MODE=1` and `ARDUINO_USB_CDC_ON_BOOT=1`
@@ -74,6 +75,51 @@ Pulled automatically via `lib_deps`:
 `esp_camera`, `WiFi`, `WiFiClientSecure`, `HTTPClient`, `Preferences`,
 `ESPmDNS`, and `DNSServer` are provided by the `espressif32` platform's
 Arduino framework and need no entry.
+
+## Over-the-air updates (ArduinoOTA)
+
+The partition table (`default_8MB.csv`) gives the bootloader two app
+slots, `app0` and `app1` (~3.25 MB each), and an `otadata` partition
+that records which one is currently active. ArduinoOTA writes the
+incoming image into the inactive slot, then flips `otadata` so the
+next boot launches the new firmware. NVS sits at the same `0x9000`
+offset as the previous `huge_app.csv` layout, so stored WiFi
+credentials survive the partition-table switch the first time.
+
+**Pushing an update from PlatformIO**
+
+The first flash after switching to this partition table must be over
+USB (`pio run -t upload`) because the partition table itself changes.
+After that, push subsequent firmware images over the LAN:
+
+```sh
+# Discoverable as MiniSpeedCam.local once mDNS is up
+pio run -t upload --upload-port MiniSpeedCam.local
+# Or by IP if mDNS isn't reachable:
+pio run -t upload --upload-port 192.168.1.42
+```
+
+PlatformIO auto-detects ArduinoOTA from the `.local` / IP form and
+calls `espota.py` under the hood. Use the same password defined by
+`OTA_PASSWORD` (default `minispeedcam`); set
+`upload_flags = --auth=<password>` in `platformio.ini` to bake it into
+the upload command. To change the password:
+
+```ini
+build_flags  = ... -DOTA_PASSWORD=\"my-secret\"
+upload_flags = --auth=my-secret
+```
+
+**Behaviour during a transfer**
+
+When `ArduinoOTA.onStart` fires, [ota.cpp](src/ota.cpp) sets the global
+`g_ota_in_progress` flag and calls `esp_camera_deinit()` to release the
+camera driver's DMA descriptors and PSRAM framebuffer. The radar task
+(Core 1) and the upload task (Core 0) both check that flag at the top
+of their loops and back off so they don't fight the flash writer for
+memory or bandwidth. When the transfer finishes the library calls
+`ESP.restart()`, which brings up the new image with a clean camera
+init via the normal `setup()` path.
 
 ## Photo upload path
 

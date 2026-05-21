@@ -10,8 +10,8 @@
  *                        stored credentials and reboots into AP mode.
  *   - sendLocalIP():     announce the device's LAN IP to the cloud so
  *                        the user can reach the ESPUI portal remotely.
- *   - sendPhoto():       POST the captured photo + max speed (or just
- *                        the speed when below the photo threshold).
+ *   - sendPhoto():       POST the captured photo + max speed to the
+ *                        unified /capture workflow.
  *
  * NOTE: the Bearer token used inside sendLocalIP()/sendPhoto() is a
  * public Bubble.io workflow key for the minispeedcam.com endpoints, not

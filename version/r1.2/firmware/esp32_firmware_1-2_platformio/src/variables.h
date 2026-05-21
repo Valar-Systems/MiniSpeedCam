@@ -39,12 +39,14 @@ extern SleepGate sleep_gate;
 /**
  * Core 1 -> Core 0 hand-off.
  *
- * Core 1 finishes a capture/measurement run, populates photo_* and the
- * speed_collection_complete / send_photo flags, then sets send_data
- * (upload pending) or connect_wifi (radio is down, please reconnect).
- * Core 0 acts on the flags and clears them.
+ * Core 1 finishes a capture/measurement run, populates photo_filename
+ * and publishes the framebuffer inside takePhoto(), then sets
+ * speed_collection_complete (so the uploader knows maxSpeed is final)
+ * and send_data (upload pending). connect_wifi is the orthogonal "WiFi
+ * dropped, please reconnect" signal. Core 0 acts on the flags and
+ * clears them.
  *
- * The four flags are std::atomic so that writes Core 1 performs before
+ * The three flags are std::atomic so that writes Core 1 performs before
  * raising a flag (populating photo_filename, publishing the camera
  * framebuffer inside takePhoto()) are guaranteed visible on Core 0 once
  * the flag observes the new value. Implicit conversions to/from bool
@@ -52,7 +54,6 @@ extern SleepGate sleep_gate;
  */
 struct UploadJob {
   std::atomic<bool> send_data{false};                  // Fresh capture ready to upload
-  std::atomic<bool> send_photo{false};                 // Upload should include the JPEG (vehicle was speeding)
   std::atomic<bool> speed_collection_complete{false};  // Core 1 has finalized maxSpeed
   std::atomic<bool> connect_wifi{false};               // Please (re)connect WiFi
   String photo_filename;                               // Filename field included in the upload payload

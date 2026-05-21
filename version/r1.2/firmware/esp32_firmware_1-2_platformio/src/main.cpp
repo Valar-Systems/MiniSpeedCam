@@ -27,6 +27,7 @@
 #include "radar.h"
 #include "api.h"
 #include "espui_settings.h"
+#include "ota.h"
 
 DNSServer dnsServer;  // Captive-DNS used in AP mode so any URL hits the ESPUI portal
 
@@ -147,6 +148,14 @@ const long interval = 5000;        // Idle window (ms) of zero-speed before slee
 void taskCore1(void* parameter) {  // Code for task running on Core 1
   while (1) {                      // Loop indefinitely
 
+    // Halt radar polling and sleep management while an OTA transfer is
+    // in flight -- a captured framebuffer or an esp_light_sleep_start()
+    // mid-update would crash the flash writer.
+    if (g_ota_in_progress.load()) {
+      delay(100);
+      continue;
+    }
+
     dnsServer.processNextRequest();  // Process request for ESPUI
 
     if (sleep_gate.ignore_flag == true) {
@@ -215,7 +224,6 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
         radar.maxSpeed = 0;  // Tracks the max speed during the entire duraton of tracking
         bool collect_data_point = true;
         upload.send_data = false;
-        upload.send_photo = false;
         upload.speed_collection_complete = false;  // Don't send data until photo is finished
 
         while (radar.speed >= radar.min_speed) {  // Capture the cars maximum speed during the entire drive. Then reset back to zero. Send this max speed.
@@ -249,10 +257,6 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
         Serial.print("MAX maxSpeed: ");
         Serial.println(radar.maxSpeed);
 
-        if (radar.maxSpeed >= radar.photo_speed) {
-          upload.send_photo = true;
-        }
-
         upload.speed_collection_complete = true;  // Signal to httpsSend task to send data
 
         previousMillis = millis();
@@ -276,15 +280,22 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
  */
 void taskCore0(void* parameter) {
   while (1) {
+    // ArduinoOTA always gets a turn -- it's cheap (one UDP poll) when
+    // no update is incoming and indispensable when one is.
+    otaLoop();
 
-    if (upload.send_data == true) {
-      sendPhoto();
-      upload.send_data = false;
-    }
+    // Suspend other networking work during an OTA so the upload path
+    // doesn't allocate a 1+ MB request while we're flashing.
+    if (!g_ota_in_progress.load()) {
+      if (upload.send_data == true) {
+        sendPhoto();
+        upload.send_data = false;
+      }
 
-    if (upload.connect_wifi == true) {
-      connectWifi();
-      upload.connect_wifi = false;
+      if (upload.connect_wifi == true) {
+        connectWifi();
+        upload.connect_wifi = false;
+      }
     }
 
     delay(10);
