@@ -82,3 +82,11 @@ struct EspuiHandles {
   uint16_t camera_id_text = 0;
 };
 extern EspuiHandles ui_ids;
+
+/**
+ * Service mode: when true the firmware never enters light sleep and
+ * never disconnects WiFi, so OTA pushes and the ESPUI portal remain
+ * reachable indefinitely. Persisted in NVS as "service_mode". Toggled
+ * from the ESPUI Device tab.
+ */
+extern std::atomic<bool> service_mode;

@@ -28,6 +28,8 @@
 #include "api.h"
 #include "espui_settings.h"
 #include "ota.h"
+#include "diagnostics.h"
+#include "queue.h"
 
 DNSServer dnsServer;  // Captive-DNS used in AP mode so any URL hits the ESPUI portal
 
@@ -58,18 +60,27 @@ void setup() {
   // Light Sleep setup
   esp_sleep_enable_ext0_wakeup(ESP_WAKEUP_PIN, 1);  // Wake up ESP32 when GPIO1 is HIGH //STM will always pull GIO1 high when speeds above 5 mph are detected. Will pull low when speeds
 
-  // Setup Camera
+  // Bring up NVS before anything else that might log to it -- the boot
+  // diagnostics writes the boot counter, and the persisted settings
+  // load below also needs an open Preferences handle.
+  preferences.begin("local", false);
+  diagnosticsLogBoot();
+  queueInit();  // Mount LittleFS so failed uploads can be persisted
+
+  // Setup Camera. cameraSetup() itself reads the persisted JPEG quality
+  // and frame-size out of NVS so main.cpp doesn't need to know about
+  // esp_camera enums.
   cameraPowerOn();
   cameraSetup();
 
   // load saved variables
-  preferences.begin("local", false);
   net.ssid        = preferences.getString("ssid", "NOT_SET");
   net.password    = preferences.getString("pass", "NOT_SET");
-  net.camera_id   = preferences.getString("camera_id", "NOT_SET");  // Create an account and camera at tachtracker.com
-  radar.min_speed   = preferences.getInt("min_speed", 3);           // The minimum speed (MPH) that the tracker should track any vehicle and upload data
-  radar.photo_speed = preferences.getInt("photo_speed", 10);        // Cars speed (MPH) when photo should be taken
-  radar.is_kph      = preferences.getBool("is_kph", 0);             // Cars speed (MPH) when photo should be taken
+  net.camera_id   = preferences.getString("camera_id", "NOT_SET");
+  radar.min_speed   = preferences.getInt("min_speed", 3);
+  radar.photo_speed = preferences.getInt("photo_speed", 10);
+  radar.is_kph      = preferences.getBool("is_kph", 0);
+  service_mode      = preferences.getBool("service_mode", false);   // Keep-awake mode for OTA / debugging
 
   // Connect CDM324 sensor
   Serial.println("Connecting CDM324");
@@ -178,12 +189,17 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
 
     if (sleep_gate.wake_flag == true) {
       if (millis() >= sleep_gate.sleep_time) {   // Only if 120 seconds passed
-        if (digitalRead(ESP_WAKEUP_PIN) == 0) {  // Only if STM not measuring data
+        if (digitalRead(ESP_WAKEUP_PIN) == 0 && !service_mode.load()) {
           sleep_gate.wake_flag = false;
-          Serial.println("Going to sleep 1");  // Go to sleep
+          Serial.println("Going to sleep 1");
 
-          esp_light_sleep_start();
-          WiFi.disconnect(true);  // Drop creds so the reconnect path runs fresh after wake.
+          cameraPowerOff();         // Drop sensor current draw (~20-50 mA)
+          esp_light_sleep_start();  // ...wake on ESP_WAKEUP_PIN going HIGH
+          // Wake path: bring the camera back up and tear WiFi down so
+          // the reconnect logic runs cleanly when activity is detected.
+          cameraPowerOn();
+          cameraSetup();
+          WiFi.disconnect(true);
           WiFi.mode(WIFI_OFF);
         }
       }
@@ -192,13 +208,16 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
     /* SLEEP - 5 seconds of no activity on radar */
     unsigned long currentMillis = millis();
 
-    if (sleep_gate.wake_flag == false) {
+    if (sleep_gate.wake_flag == false && !service_mode.load()) {
       if (radar.speed == 0) {  // Check if speed is 0
         if (currentMillis - previousMillis >= interval) {
           previousMillis = currentMillis;
           Serial.println("Going to sleep 2");
 
+          cameraPowerOff();
           esp_light_sleep_start();
+          cameraPowerOn();
+          cameraSetup();
           WiFi.disconnect(true);
           WiFi.mode(WIFI_OFF);
           previousMillis = millis();
@@ -226,7 +245,16 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
         upload.send_data = false;
         upload.speed_collection_complete = false;  // Don't send data until photo is finished
 
+        // Hard cap so a stuck radar can't pin this loop indefinitely.
+        constexpr unsigned long kMaxRunMs = 60000;
+        const unsigned long run_start_ms = millis();
+
         while (radar.speed >= radar.min_speed) {  // Capture the cars maximum speed during the entire drive. Then reset back to zero. Send this max speed.
+          if (millis() - run_start_ms >= kMaxRunMs) {
+            Serial.println("Tracking run exceeded 60s; bailing out");
+            break;
+          }
+
           if (radar.is_kph == true) {
             radar.speed = get_speed(true);  // Get speed (KPH) from STM32 via UART
           } else {
@@ -279,6 +307,12 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
  * triggers a (re)connection attempt.
  */
 void taskCore0(void* parameter) {
+  // Periodic queue-drain timer. Independent of upload events so a long
+  // WiFi outage clears as soon as the radio comes back, not just on
+  // the next radar trigger.
+  unsigned long last_drain_attempt_ms = 0;
+  constexpr unsigned long kDrainIntervalMs = 30000;
+
   while (1) {
     // ArduinoOTA always gets a turn -- it's cheap (one UDP poll) when
     // no update is incoming and indispensable when one is.
@@ -296,6 +330,16 @@ void taskCore0(void* parameter) {
         connectWifi();
         upload.connect_wifi = false;
       }
+
+      // Drain any backlog. No-op when WiFi is down or there's nothing
+      // to send; throttled so the iteration stays cheap.
+      if (millis() - last_drain_attempt_ms >= kDrainIntervalMs) {
+        last_drain_attempt_ms = millis();
+        queueDrain();
+      }
+
+      // Push Status-tab values to any connected ESPUI clients.
+      espuiDiagnosticsTick();
     }
 
     delay(10);

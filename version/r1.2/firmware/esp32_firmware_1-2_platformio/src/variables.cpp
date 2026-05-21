@@ -13,3 +13,5 @@ SleepGate   sleep_gate;
 UploadJob   upload;
 NetConfig   net;
 EspuiHandles ui_ids;
+
+std::atomic<bool> service_mode{false};

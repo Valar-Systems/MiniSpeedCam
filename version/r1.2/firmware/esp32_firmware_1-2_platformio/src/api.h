@@ -26,3 +26,16 @@ void connectWifi();
 void wifiResetButton();
 void sendLocalIP();
 void sendPhoto();
+
+/**
+ * Stateless event upload used by both the live capture path
+ * (sendPhoto) and the queue-drain path (queue.cpp). Returns the HTTP
+ * status code, or a negative number if the request could not even be
+ * sent (no WiFi, no DNS, etc.). epoch may be 0 if NTP has not synced
+ * yet -- the server falls back to receive-time in that case.
+ */
+int apiUploadEventFromMemory(int speed,
+                             long long epoch,
+                             const String& camera_id,
+                             const uint8_t* jpeg,
+                             size_t jpeg_len);

@@ -1,5 +1,7 @@
 #include "api.h"
 
+#include <time.h>
+
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
@@ -8,8 +10,10 @@
 #include <DNSServer.h>
 
 #include "camera.h"
+#include "diagnostics.h"
 #include "ota.h"
 #include "pins.h"
+#include "queue.h"
 #include "variables.h"
 
 // Captive-DNS server owned by main.cpp; used here to redirect every host
@@ -28,6 +32,47 @@ static const char* kServerLocalIpAddress = "https://minispeedcam.com/api/1.1/wf/
 
 // Bearer token for the public Bubble.io workflow endpoints.
 static const char* kBearerToken = "bc6d8bd23bbeb6b13fa67448c244a129";
+
+// Root CA certificate pinning. When this string is non-empty,
+// WiFiClientSecure.setCACert() is used instead of setInsecure(),
+// which validates the server's certificate chain against this anchor.
+//
+// To enable: paste the PEM-encoded root that signs minispeedcam.com
+// here (Cloudflare's "Baltimore CyberTrust Root" or whichever the
+// Bubble app currently uses -- check with `openssl s_client -connect
+// minispeedcam.com:443 -showcerts`). Format the PEM as a C string
+// literal with newlines as \n. Leaving this empty preserves the
+// previous (insecure) behaviour.
+static const char* kCaRootCert = "";
+
+// Minimum gap between event uploads. The radar is unlikely to produce
+// genuinely-distinct events at sub-second cadence, and rate-limiting
+// here defends the cloud quota if the radar ever wedges high.
+static constexpr unsigned long kMinUploadGapMs = 3000;
+
+// Apply CA pinning if configured, otherwise fall back to setInsecure.
+static void configureTls(WiFiClientSecure* client) {
+  if (kCaRootCert && kCaRootCert[0] != '\0') {
+    client->setCACert(kCaRootCert);
+  } else {
+    client->setInsecure();
+  }
+}
+
+// Kick off SNTP using two well-known servers, UTC offset. Safe to call
+// multiple times -- subsequent calls just re-prime the resolver. The
+// initial sync is async; time() returns epoch < 1700000000 until the
+// first response lands (typically a few seconds after the call).
+static void startNtpSync() {
+  configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+}
+
+// Epoch seconds when the system clock is at least plausibly synced
+// (post-2023), otherwise 0 so the server can fall back to receive-time.
+static long long currentEpochOrZero() {
+  time_t now = time(nullptr);
+  return (now > 1700000000) ? (long long)now : 0LL;
+}
 
 /**
  * First-boot WiFi bring-up.
@@ -60,7 +105,8 @@ void connectWifiAP() {
       Serial.println("Error setting up MDNS responder!");
     }
 
-    otaBegin();  // Start ArduinoOTA listener on the freshly-joined network
+    startNtpSync();  // Kick off clock sync so event_time gets a real epoch
+    otaBegin();      // Start ArduinoOTA listener on the freshly-joined network
 
   } else {
     Serial.println("\nCreating access point...");
@@ -119,9 +165,13 @@ void connectWifi() {
 
   // Refresh the ArduinoOTA listener -- the previous UDP socket was torn
   // down when WiFi dropped, so begin() needs to run again on each
-  // successful reconnect for OTA to remain reachable.
+  // successful reconnect for OTA to remain reachable. Same logic for
+  // SNTP: the resolver state was lost during the disconnect window.
   if (WiFi.status() == WL_CONNECTED) {
+    startNtpSync();
     otaBegin();
+    // Drain any events that we queued offline while WiFi was down.
+    queueDrain();
   }
 }
 
@@ -180,7 +230,7 @@ void sendLocalIP() {
   Serial.println(net.local_ip_address);
 
   WiFiClientSecure* client = new WiFiClientSecure;
-  client->setInsecure();
+  configureTls(client);
 
   HTTPClient https;
 
@@ -304,55 +354,84 @@ class StreamingUploadBody : public Stream {
 };
 
 /**
+ * Stateless event upload. Builds the JSON wrapper around the JPEG and
+ * streams it straight from `jpeg` (PSRAM, heap, or a file-backed buffer
+ * -- the caller decides) so nothing the size of the encoded photo ever
+ * sits in regular heap.
+ */
+int apiUploadEventFromMemory(int speed,
+                             long long epoch,
+                             const String& camera_id,
+                             const uint8_t* jpeg,
+                             size_t jpeg_len) {
+  if (WiFi.status() != WL_CONNECTED) {
+    return -1;
+  }
+
+  WiFiClientSecure* client = new WiFiClientSecure;
+  configureTls(client);
+
+  HTTPClient https;
+  https.begin(*client, kCaptureEndpoint);
+  https.setConnectTimeout(5000);
+  https.setTimeout(15000);
+
+  String token = String("Bearer ") + kBearerToken;
+  https.addHeader("Authorization", token);
+  https.addHeader("Content-Type", "application/json");
+
+  // "send_photo" is hardcoded "true" -- preserved in the payload so the
+  // Bubble workflow can keep the same field shape it had under the old
+  // /speeding_capture URL.
+  String prologue;
+  prologue.reserve(220);
+  prologue  = "{\"send_photo\":\"true\",\"camera\":\"";
+  prologue += camera_id;
+  prologue += "\",\"speed_actual\":\"";
+  prologue += speed;
+  prologue += "\",\"event_time\":\"";
+  prologue += String((long long)epoch);
+  prologue += "\",\"photo\":{\"filename\":\"image.jpg\",\"contents\":\"";
+
+  const String epilogue = "\"}}";
+
+  StreamingUploadBody body(prologue, jpeg, jpeg_len, epilogue);
+
+  Serial.printf("Streaming POST, payload bytes: %u\n",
+                (unsigned)body.totalLength());
+  int http_code = https.sendRequest("POST", &body, body.totalLength());
+  Serial.printf("HTTP Response code: %d\n", http_code);
+
+  if (http_code > 0) {
+    Serial.println(https.getString());
+  }
+
+  https.end();
+  delete client;
+  return http_code;
+}
+
+/**
  * Upload the most recent capture to minispeedcam.com.
  *
- * Streams the JSON body straight from the PSRAM-resident framebuffer
- * through StreamingUploadBody so nothing the size of the encoded photo
- * ever sits in regular heap. Blocks until Core 1 finishes computing
- * the per-vehicle max speed (`upload.speed_collection_complete`) so we
- * always upload the highest sample rather than the speed at trigger
- * time. Runs on Core 0 and is gated by `upload.send_data` from Core 1,
- * which is only raised when takePhoto() succeeds -- so reaching this
- * function without a pending framebuffer indicates a logic bug
- * elsewhere and the upload is aborted defensively.
+ * Wraps apiUploadEventFromMemory() with the live-capture lifecycle:
+ * waits for Core 1 to finalize maxSpeed, enforces the per-event rate
+ * limit, records the HTTP outcome for the Status tab, and -- if the
+ * POST cannot go out cleanly -- hands the JPEG off to the offline
+ * queue so it can be retried later instead of being dropped on the
+ * floor.
  */
 void sendPhoto() {
   Serial.println("sendPhoto");
 
-  // Whatever the outcome, photo_filename must be cleared and the
-  // framebuffer must go back to the driver so Core 1's next takePhoto()
-  // can run. Order matters: photo_filename is cleared *before* releasing
-  // the framebuffer, because once g_pending_fb goes to nullptr Core 1 is
+  // Order matters: photo_filename is cleared *before* releasing the
+  // framebuffer because once g_pending_fb goes to nullptr Core 1 is
   // free to enter takePhoto() and write a new filename -- doing it the
   // other way around would race.
   auto releasePhoto = []() {
     upload.photo_filename = String();
     cameraReleasePendingPhoto();
   };
-
-  if (WiFi.getMode() != WIFI_STA) {
-    Serial.println("Not in STATION MODE");
-    releasePhoto();
-    return;
-  }
-
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("Not connected to WiFi");
-    connectWifi();
-  }
-
-  uint8_t timeout = 100;  // Wait for connection, 10s timeout
-  while (timeout && WiFi.status() != WL_CONNECTED) {
-    delay(100);
-    Serial.println(".");
-    timeout--;
-  }
-
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("Upload aborted: WiFi not connected");
-    releasePhoto();
-    return;
-  }
 
   // Defensive: send_data should never be raised without a pending fb,
   // but if it ever is we want to release whatever state is around and
@@ -363,58 +442,75 @@ void sendPhoto() {
     return;
   }
 
-  WiFiClientSecure* client = new WiFiClientSecure;
-  client->setInsecure();
-
-  HTTPClient https;
-  String recv_token = String("Bearer ") + kBearerToken;
-
-  // Hold the upload until Core 1 has finalized maxSpeed for the run.
+  // Hold until Core 1 has finalized maxSpeed for the run.
   while (upload.speed_collection_complete == false) {
     delay(100);
     Serial.println("waiting on data");
   }
-  int speed_actual = radar.maxSpeed;
+  const int speed_actual = radar.maxSpeed;
+  const long long event_time = currentEpochOrZero();
 
-  https.begin(*client, kCaptureEndpoint);
-  https.setConnectTimeout(5000);
-  https.setTimeout(15000);  // base64 upload over WiFi may exceed the 5s used for control APIs
-  https.addHeader("Authorization", recv_token);
-  https.addHeader("Content-Type", "application/json");
+  // Rate-limit: distinct radar events should never arrive sub-second; a
+  // burst suggests a wedged signal. Queue rather than POST.
+  static unsigned long s_last_upload_ms = 0;
+  const bool rate_limited =
+      (s_last_upload_ms != 0) &&
+      (millis() - s_last_upload_ms < kMinUploadGapMs);
 
-  // The "send_photo" field is hardcoded "true" since the consolidated
-  // endpoint only ever receives speeding events with a photo. It's kept
-  // in the payload so the Bubble workflow can keep the same field shape
-  // it had under the old /speeding_capture URL.
-  String prologue;
-  prologue.reserve(160);
-  prologue  = "{\"send_photo\":\"true\",\"camera\":\"";
-  prologue += net.camera_id;
-  prologue += "\",\"speed_actual\":\"";
-  prologue += speed_actual;
-  prologue += "\",\"photo\":{\"filename\":\"";
-  prologue += upload.photo_filename;
-  prologue += "\",\"contents\":\"";
-
-  const String epilogue = "\"}}";
-
-  StreamingUploadBody body(prologue,
-                           cameraPendingPhotoData(),
-                           cameraPendingPhotoLength(),
-                           epilogue);
-
-  Serial.print("Streaming POST, payload bytes: ");
-  Serial.println(body.totalLength());
-  int http_code = https.sendRequest("POST", &body, body.totalLength());
-  Serial.print("HTTP Response code: ");
-  Serial.println(http_code);
-
-  if (http_code > 0) {
-    Serial.println(https.getString());
+  if (rate_limited) {
+    Serial.println("Rate-limited; queueing event for later");
+    queueEnqueueEvent(speed_actual, event_time, net.camera_id,
+                      cameraPendingPhotoData(),
+                      cameraPendingPhotoLength());
+    releasePhoto();
+    return;
   }
 
-  https.end();
-  delete client;
+  // If WiFi is down, queue instead of dropping. Try a quick reconnect
+  // first so transient blips don't push every event to disk.
+  if (WiFi.getMode() != WIFI_STA) {
+    Serial.println("Not in STATION MODE; queueing event");
+    queueEnqueueEvent(speed_actual, event_time, net.camera_id,
+                      cameraPendingPhotoData(),
+                      cameraPendingPhotoLength());
+    releasePhoto();
+    return;
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi not connected; attempting reconnect before upload");
+    connectWifi();
+    uint8_t timeout = 50;  // ~5s
+    while (timeout && WiFi.status() != WL_CONNECTED) {
+      delay(100);
+      timeout--;
+    }
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("Upload deferred: WiFi did not come back; queueing");
+    queueEnqueueEvent(speed_actual, event_time, net.camera_id,
+                      cameraPendingPhotoData(),
+                      cameraPendingPhotoLength());
+    releasePhoto();
+    return;
+  }
+
+  s_last_upload_ms = millis();
+  int http_code = apiUploadEventFromMemory(
+      speed_actual, event_time, net.camera_id,
+      cameraPendingPhotoData(),
+      cameraPendingPhotoLength());
+
+  diagnosticsRecordUpload(http_code);
+
+  // Anything outside 2xx is treated as a delivery failure. Queue for
+  // retry on the next drain.
+  if (http_code < 200 || http_code >= 300) {
+    Serial.printf("Upload failed (HTTP %d); queueing event for retry\n",
+                  http_code);
+    queueEnqueueEvent(speed_actual, event_time, net.camera_id,
+                      cameraPendingPhotoData(),
+                      cameraPendingPhotoLength());
+  }
 
   releasePhoto();
 }

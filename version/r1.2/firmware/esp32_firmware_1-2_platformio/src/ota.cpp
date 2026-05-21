@@ -4,16 +4,26 @@
 #include <ArduinoOTA.h>
 #include <esp_camera.h>
 
-#include "api.h"  // for HOSTNAME
+#include "api.h"          // for HOSTNAME
+#include "variables.h"    // preferences
 
 std::atomic<bool> g_ota_in_progress{false};
 
-// Default OTA password. Override at build time via
+// Compiled-in fallback password used when nothing has been stored in
+// NVS yet (first boot, or after a Clear Settings press). Override at
+// build time with:
 //   build_flags = -DOTA_PASSWORD=\"your-password\"
-// in platformio.ini.
+// in platformio.ini. The runtime password is read from NVS in
+// otaBegin() so it can also be changed via the ESPUI Device tab.
 #ifndef OTA_PASSWORD
 #define OTA_PASSWORD "minispeedcam"
 #endif
+
+// The ArduinoOTA library keeps a const char* internally to whatever
+// pointer we hand setPassword(), so we need to own a stable backing
+// store -- a String survives this scope and stays valid as long as
+// the program runs.
+static String g_ota_password;
 
 static void onStart() {
   g_ota_in_progress.store(true);
@@ -60,8 +70,9 @@ static void onError(ota_error_t err) {
 void otaBegin() {
   static bool configured = false;
   if (!configured) {
+    g_ota_password = preferences.getString("ota_pass", OTA_PASSWORD);
     ArduinoOTA.setHostname(HOSTNAME);
-    ArduinoOTA.setPassword(OTA_PASSWORD);
+    ArduinoOTA.setPassword(g_ota_password.c_str());
     ArduinoOTA.onStart(onStart);
     ArduinoOTA.onEnd(onEnd);
     ArduinoOTA.onProgress(onProgress);
@@ -70,6 +81,15 @@ void otaBegin() {
   }
   ArduinoOTA.begin();
   Serial.printf("OTA listening as %s.local:3232\n", HOSTNAME);
+}
+
+void otaSetPassword(const String& password) {
+  // Persist the new password and reflect it in the live listener. The
+  // change takes effect on the next OTA connect (existing sessions
+  // continue with the previous password until they disconnect).
+  preferences.putString("ota_pass", password);
+  g_ota_password = password;
+  ArduinoOTA.setPassword(g_ota_password.c_str());
 }
 
 void otaLoop() {

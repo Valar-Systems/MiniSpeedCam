@@ -26,7 +26,13 @@
 
 #include <atomic>
 
+#include <Arduino.h>  // for Arduino String
+
 extern std::atomic<bool> g_ota_in_progress;
 
 void otaBegin();
 void otaLoop();
+
+// Persist a new OTA password (NVS) and update the live listener.
+// Called from the ESPUI Device tab.
+void otaSetPassword(const String& password);

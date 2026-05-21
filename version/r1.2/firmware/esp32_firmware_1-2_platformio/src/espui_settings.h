@@ -15,3 +15,10 @@
  * Build the ESPUI control tree and start serving it.
  */
 void load_espui();
+
+/**
+ * Refresh the Status-tab labels (current speed, free heap, RSSI, etc.).
+ * Throttled internally to ~1 Hz, so it's safe to call every iteration
+ * of taskCore0. No-op until load_espui() has run.
+ */
+void espuiDiagnosticsTick();

@@ -87,3 +87,23 @@ size_t cameraPendingPhotoLength();
  * safe to call when no photo is pending.
  */
 void cameraReleasePendingPhoto();
+
+/**
+ * Power the OV2640 down for sleep. Releases the pending framebuffer,
+ * de-inits the camera driver, and drives PWDN high so the sensor
+ * itself stops drawing current. Pair with cameraPowerOn() +
+ * cameraSetup() after wake to bring it back.
+ */
+void cameraPowerOff();
+
+// --- Runtime-tunable image settings (persisted in NVS, edited via ESPUI) ---
+//
+// Frame size is stored as the framesize_t enum value (an int 0..N). The
+// camera module owns the esp_camera coupling so other modules can pass
+// raw ints without including esp_camera.h.
+
+int  cameraGetJpegQuality();   // 0..63; lower = better quality
+void cameraSetJpegQuality(int quality);
+
+int  cameraGetFrameSize();     // framesize_t cast to int
+void cameraSetFrameSize(int framesize);

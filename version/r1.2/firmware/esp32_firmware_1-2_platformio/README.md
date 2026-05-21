@@ -22,7 +22,9 @@ esp32_firmware_1-2_platformio/
     ├── radar.{h,cpp}   UART protocol with the STM32 radar MCU
     ├── api.{h,cpp}     WiFi bring-up + HTTPS uploads to minispeedcam.com
     ├── espui_settings.{h,cpp}  Web-UI controls + NVS persistence
-    └── ota.{h,cpp}     ArduinoOTA listener + transfer-state flag
+    ├── ota.{h,cpp}     ArduinoOTA listener + transfer-state flag
+    ├── diagnostics.{h,cpp}  Boot reason / boot count / uptime / last upload
+    └── queue.{h,cpp}   LittleFS-backed offline event queue (retry on WiFi return)
 ```
 
 ### Shared state
@@ -132,3 +134,60 @@ JSON prologue, on-the-fly base64 chunks of the JPEG, and the JSON
 epilogue as `HTTPClient::sendRequest()` pulls ~1.4 KB at a time into
 its TCP write buffer. Peak heap during upload is therefore dominated
 by the TCP buffer plus a couple of short Strings, not the photo.
+
+Each upload now also carries an `event_time` epoch field (seconds since
+1970, UTC). NTP sync is kicked off after every successful STA
+association via `pool.ntp.org`; until the first NTP packet lands, the
+field is sent as `0` and the server falls back to receive-time.
+
+## Offline event queue
+
+When the live upload path can't deliver an event (no WiFi, transient
+server error, rate-limit), the JPEG + metadata is written to LittleFS
+under `/queue/NNNNNNNN.bin` via [queue.cpp](src/queue.cpp). On every
+Core 0 iteration (throttled to ~30 s) and on every WiFi reconnect, the
+queue is drained oldest-first; events that POST successfully are
+deleted, the first failure aborts the drain so we don't hammer a
+broken endpoint. The queue lives in the 1.5 MB `spiffs` partition
+reserved by `default_8MB.csv`, giving room for ~15 full-resolution
+JPEGs of typical size.
+
+The Status tab in the web UI shows the pending queue depth so you can
+tell at a glance whether the device is keeping up with delivery.
+
+## Web UI
+
+Three tabs at the device's IP (`MiniSpeedCam.local` over mDNS):
+
+- **Device** - MPH/KPH switch, min speed, photo speed, *Service Mode*
+  (keep awake / no sleep so OTA stays reachable), JPEG quality (0-63),
+  Frame size (QVGA through UXGA).
+- **Wifi Settings** - Network SSID / password, Camera ID, OTA password,
+  Clear Settings, Save Settings (reboots).
+- **Status** - Live diagnostics, refreshed ~1 Hz from `taskCore0`:
+  current speed, free heap and PSRAM, uptime, WiFi RSSI and IP, last
+  upload HTTP code, pending queue depth, last reset reason, boot count.
+
+## Power management
+
+When neither *Service Mode* is on nor the post-boot grace window is
+active, the firmware enters `esp_light_sleep_start()` after 5 s of zero
+radar activity. Before each sleep the OV2640 is fully released
+(`esp_camera_deinit()` + PWDN high) so the sensor draws no current
+during sleep; on wake (ESP_WAKEUP_PIN going high), the camera is
+re-initialised. Combined with WiFi being torn down across sleep
+cycles, idle current drops substantially compared to the previous
+"sleep but leave the camera live" path.
+
+## TLS
+
+`api.cpp` defines a `kCaRootCert` string; if non-empty it is fed to
+`WiFiClientSecure::setCACert()` so HTTPS uploads validate against the
+pinned root. Out of the box it is empty, falling back to
+`setInsecure()` (the legacy behaviour). To enable validation, paste
+the PEM-encoded root that signs `minispeedcam.com` over the placeholder
+and rebuild. Fetch it with:
+
+```sh
+openssl s_client -connect minispeedcam.com:443 -showcerts < /dev/null
+```
