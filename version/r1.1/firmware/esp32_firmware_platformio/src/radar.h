@@ -13,14 +13,29 @@
 
 void issue_cdm324_reset(void);
 
+// Physical ceiling for a believable vehicle speed, in the configured units
+// (after the /10 scaling below). RF noise — frequently amplified by nearby
+// WiFi transmission — makes the STM32's FFT emit nonsensical spikes; any
+// reading beyond this is treated as junk and discarded. 250 comfortably
+// covers real road speeds in both MPH and KPH while rejecting noise.
+static const float MAX_PLAUSIBLE_SPEED = 250.0f;
+
 /**
  * Query the STM32 for the most recent speed sample.
  *
  * @param kmh  true = request KPH, false = request MPH.
  * @return     Speed in the requested units. Returns 0 if the STM32 did
- *             not have data ready when polled.
+ *             not have data ready, or if the reading was implausible
+ *             (negative / above MAX_PLAUSIBLE_SPEED) and treated as noise.
  */
 float get_speed(bool kmh) {
+  // Drain any stale or noise bytes sitting in the RX buffer so parseFloat()
+  // starts cleanly on the STM32's reply rather than on leftover garbage
+  // (UART line noise from WiFi activity can leave partial/junk bytes here).
+  while (Serial1.available() > 0) {
+    Serial1.read();
+  }
+
   if (kmh == true) {
     // Query km/h * 10
     Serial1.print('k');
@@ -29,15 +44,30 @@ float get_speed(bool kmh) {
     Serial1.print('m');
   }
 
-  float speed = 0;  // default to 0 so a stale/garbage value is never returned when no data is ready
-  if (Serial1.available() > 0) {
-    speed = Serial1.parseFloat();
-  } else {
+  // Give the STM32 a brief, bounded window to answer before parsing. The
+  // original code checked available() immediately and could race the reply;
+  // parseFloat() would then block up to the stream timeout chewing on noise.
+  unsigned long start = millis();
+  while (Serial1.available() == 0 && (millis() - start) < 50) {
+    /* wait for the reply, capped at 50ms */
+  }
+  if (Serial1.available() == 0) {
     Serial.println("NO DATA");
+    return 0;  // nothing arrived; report no motion rather than a stale value
   }
 
-  // STM32 reports speed * 10 as an integer-style ASCII float; scale back to a real value.
-  return (speed / 10);
+  // STM32 reports speed * 10 as an integer-style ASCII float; scale back.
+  float speed = Serial1.parseFloat() / 10.0f;
+
+  // Reject implausible values: negative or beyond the physical ceiling are
+  // noise, not a real vehicle. Returning 0 keeps junk out of the run-trigger
+  // and upload paths entirely.
+  if (speed < 0.0f || speed > MAX_PLAUSIBLE_SPEED) {
+    Serial.printf("[RADAR] rejected junk reading: %.1f\n", speed);
+    return 0;
+  }
+
+  return speed;
 }
 
 /**

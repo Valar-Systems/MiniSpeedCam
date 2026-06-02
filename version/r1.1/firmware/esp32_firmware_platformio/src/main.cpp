@@ -204,6 +204,12 @@ void loop() {
 unsigned long previousMillis = 0;  // Timestamp of last idle-sleep tick
 const long interval = 5000;        // Idle window (ms) of zero-speed before sleeping
 
+// A run only starts after this many consecutive readings >= min_speed. A lone
+// noise spike that slips under the plausibility ceiling (see get_speed) lasts
+// a single sample, so requiring 2 in a row rejects glitches while a real
+// vehicle (many samples) still triggers immediately.
+const int SPEED_CONFIRM_COUNT = 2;
+
 /**
  * Core 1 task: radar polling, sleep policy, and ESPUI/DNS servicing.
  *
@@ -307,9 +313,19 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
     }
 
     if (ignore_flag == false) {
+      // Debounce: count consecutive over-threshold readings; a single glitch
+      // resets the count, so it can never reach SPEED_CONFIRM_COUNT.
+      static int speedConfirmCount = 0;
       if (speed >= min_speed) {
+        speedConfirmCount++;
+      } else {
+        speedConfirmCount = 0;
+      }
 
-        Serial.printf("[RUN] start: speed=%d >= min_speed=%d\n", speed, min_speed);
+      if (speed >= min_speed && speedConfirmCount >= SPEED_CONFIRM_COUNT) {
+        speedConfirmCount = 0;  // consumed; the run loop below tracks the pass
+
+        Serial.printf("[RUN] start: speed=%d >= min_speed=%d (confirmed)\n", speed, min_speed);
 
         delay(100);
         maxSpeed = 0;               // Tracks the max speed over the entire pass

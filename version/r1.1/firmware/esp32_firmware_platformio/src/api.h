@@ -23,6 +23,12 @@
 
 #define HOSTNAME "MiniSpeedCam"  // mDNS name and Soft-AP SSID
 
+// WiFi transmit power. The default (~19.5dBm) maximises range but the TX
+// current spikes / RF energy couple into the CDM324 radar front-end and
+// corrupt the FFT speed readings. Lowering it trades range for far less EMI;
+// raise back toward WIFI_POWER_19_5dBm if WiFi range becomes the problem.
+#define WIFI_TX_POWER WIFI_POWER_11dBm
+
 /**
  * Apply the TLS trust policy to a secure client.
  *
@@ -52,6 +58,7 @@ void connectWifiAP() {
   Serial.println("Connecting WiFi/AP");
   //Try to connect with stored credentials, fire up an access point if they don't work.
   WiFi.mode(WIFI_STA);
+  WiFi.setTxPower(WIFI_TX_POWER);  // reduce EMI into the radar front-end
   WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE, INADDR_NONE);
   WiFi.begin(ssid, password);
   connect_timeout = 28;  //7 seconds
@@ -79,6 +86,7 @@ void connectWifiAP() {
     WiFi.mode(WIFI_OFF);
     delay(100);
     WiFi.mode(WIFI_AP);
+    WiFi.setTxPower(WIFI_TX_POWER);  // reduce EMI into the radar front-end
 
     bool cfg = WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
     if (!cfg) Serial.println("[AP] softAPConfig() failed");
@@ -128,6 +136,7 @@ void connectWifi() {
   Serial.println("Connecting WiFi");
   WiFi.setSleep(false);  // TEST
   WiFi.mode(WIFI_STA);
+  WiFi.setTxPower(WIFI_TX_POWER);  // reduce EMI into the radar front-end
   WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE, INADDR_NONE);
   WiFi.setHostname(HOSTNAME);  // match connectWifiAP()/mDNS so the station hostname stays "MiniSpeedCam" across reconnects
 
@@ -393,6 +402,19 @@ void sendUpload(const UploadRequest& req) {
     return;
   }
 
+  // Client-side rate limit: never POST capture events closer than 3s apart.
+  // The Bubble server enforces this authoritatively; this just keeps a burst
+  // of back-to-back passes from tripping the server limit during normal use.
+  // Events inside the window are dropped (not queued) so Core 0 never blocks.
+  static const unsigned long MIN_UPLOAD_INTERVAL_MS = 3000;
+  static unsigned long lastUploadMs = 0;
+  static bool haveUploaded = false;
+  if (haveUploaded && (millis() - lastUploadMs) < MIN_UPLOAD_INTERVAL_MS) {
+    Serial.printf("[UPLOAD] rate-limited: dropping event (%lums since last)\n",
+                  (unsigned long)(millis() - lastUploadMs));
+    return;
+  }
+
   if (WiFi.getMode() != WIFI_STA) {
     Serial.println("Not in STATION MODE");
     return;
@@ -423,6 +445,10 @@ void sendUpload(const UploadRequest& req) {
   https.setTimeout(5000);
   https.addHeader("Authorization", recv_token);         // Adding Bearer token as HTTP header
   https.addHeader("Content-Type", "application/json");  // Adding Bearer token as HTTP header
+
+  // Commit the rate-limit timestamp now that we're actually sending.
+  lastUploadMs = millis();
+  haveUploaded = true;
 
   if (req.has_photo && req.fb != nullptr) {
     // Stream prologue + base64(framebuffer) + epilogue without ever holding
