@@ -17,6 +17,12 @@ int photo_speed;             // Speed threshold within a run that triggers a pho
 bool is_kph;                 // true = KPH units, false = MPH (persisted in NVS)
 int maxSpeed;                // Highest speed observed during the current tracking run
 
+// Power-Saver Mode (persisted in NVS). When true the radar loop drops WiFi
+// during the idle/sleep windows to save power; when false the device never
+// sleeps and WiFi stays up (handy for keeping the web UI reachable). Written
+// by the ESPUI callback task, read by taskCore1, hence volatile.
+volatile bool power_saver;
+
 volatile bool connect_wifi;  // Core 1 -> Core 0: please attempt a WiFi (re)connect
 
 // --- Core 1 -> Core 0 upload handoff ---
@@ -53,6 +59,7 @@ String httpsRequestData;     // Request-body buffer used by sendLocalIP()
 
 // --- ESPUI control handles ---
 uint16_t wifi_ssid_text, wifi_pass_text, camera_id_text;  // ESPUI text inputs for credentials
+uint16_t labelSpeed;         // ESPUI label showing the live speed reading
 String local_ip_address;     // Most recent station-mode IP (sent to the cloud)
 
 // Captive-DNS config for AP mode. NOTE: dnsServer.start() is never called

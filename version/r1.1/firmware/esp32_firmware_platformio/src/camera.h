@@ -117,8 +117,9 @@ int cameraSetup(void) {
 camera_fb_t* capturePhoto(void) {
   camera_fb_t* fb = esp_camera_fb_get();  // Capture photo
   if (!fb) {
-    Serial.println("Camera capture failed 1");
+    Serial.println("[CAM] capture FAILED");
     return nullptr;
   }
+  Serial.printf("[CAM] captured %u bytes\n", (unsigned)fb->len);
   return fb;
 }

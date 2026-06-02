@@ -27,7 +27,8 @@ esp32_firmware_platformio/
     ├── camera.h            OV2640 init + JPEG capture (framebuffer kept for streaming)
     ├── radar.h             UART protocol with the STM32 radar MCU
     ├── api.h               WiFi bring-up + streaming HTTPS upload to minispeedcam.com
-    └── espui_settings.h    Web-UI controls + NVS persistence
+    ├── diagnostics.h       Reset reason / boot count / uptime / last-upload code
+    └── espui_settings.h    Web-UI controls (Device / Wifi / Status tabs) + NVS persistence
 ```
 
 ## Build / flash
@@ -116,3 +117,75 @@ Every run uploads exactly once: a full photo POST when speeding, or a short
 speed-only POST otherwise (the `send_photo` JSON field tells the server which).
 The camera is configured with `fb_count = 2` so Core 1 can capture a new frame
 while Core 0 is still streaming the previous one.
+
+## Web UI
+
+ESPUI portal at the device's IP (`MiniSpeedCam.local` over mDNS):
+
+- **Device** — live Current Speed readout (updated ~3 Hz from the radar task),
+  MPH/KPH switch, Power-Saver Mode switch (drop WiFi when idle vs. never sleep),
+  minimum speed, photo speed.
+- **Wifi Settings** — Network SSID / password, Camera ID, Clear Settings, Save
+  Settings (reboots).
+- **Status** — live diagnostics refreshed ~1 Hz: current speed, free heap and
+  PSRAM, uptime, WiFi RSSI and IP, last upload HTTP code, last reset reason,
+  boot count.
+
+All label updates are pushed from `taskCore1` so a single task owns the ESPUI
+WebSocket (the upload task on Core 0 never touches it).
+
+## Power management
+
+**Power-Saver Mode** (Device tab, persisted in NVS, default **on**) gates the
+radar loop's two idle paths: after the post-boot grace window, and after 5 s of
+zero radar activity, the device drops WiFi (`WiFi.disconnect` + `WIFI_OFF`).
+Turn it **off** to keep the device permanently awake with WiFi up (e.g. while
+configuring or debugging) — toggling it off also triggers an immediate
+reconnect so the web UI comes straight back. `esp_light_sleep_start()` is still
+commented out in `taskCore1`, so today the saving is WiFi-off only.
+
+## TODO
+
+### Verify before relying on this build
+- [ ] Hardware smoke-test the capture/upload path: confirm a speeding pass
+      produces a well-formed streamed photo POST, and a pass between
+      `min_speed` and `photo_speed` produces a valid speed-only POST.
+- [ ] Confirm the `capture` endpoint accepts speed-only events (no `photo`
+      object). Behaviour changed: **every** pass now uploads, not just speeding
+      ones — gate the enqueue on `has_photo` in `taskCore1` if that's unwanted.
+
+### Open decisions / known gaps
+- [ ] Captive DNS is never started — `dnsServer.processNextRequest()` runs but
+      `dnsServer.start(DNS_PORT, "*", apIP)` is never called, so the AP-mode
+      portal redirect is inactive. Wire it up in `connectWifiAP()` or remove the
+      unused `DNS_PORT`/`apIP`.
+- [ ] Post-boot grace window: code uses `millis() + 10000` (10 s) while comments
+      say 120 s — pick one and align code + comments.
+- [ ] `speed`/`maxSpeed` are `int`, so `get_speed()`'s float is truncated.
+      Decide whether sub-unit precision should be sent (server-contract change).
+- [ ] Confirm `WIFI_RESET_PIN` needs the internal pull-up (now `INPUT_PULLUP`)
+      vs. an external one on the board.
+
+### Security
+- [ ] Rotate the bearer token (it exists in git history) and/or supply it only
+      via the `API_BEARER_TOKEN` build flag.
+- [ ] Enable TLS validation by setting `API_CA_ROOT_CERT` (currently falls back
+      to `setInsecure()`).
+
+### Possible backports from r1.2
+- [ ] OTA updates (ArduinoOTA + dual-app `default_8MB.csv` partition; pause the
+      camera during a transfer).
+- [x] Power-Saver Mode switch — toggle WiFi-drop on idle vs. never sleep
+      (persisted, with immediate reconnect on disable). *(done)*
+- [ ] Power management, deeper: re-enable `esp_light_sleep_start()` and
+      `esp_camera_deinit()` on idle (still commented out in `taskCore1`), gated
+      by the same Power-Saver Mode flag.
+- [ ] Offline event queue (LittleFS) with retry, so a capture survives a failed
+      upload / WiFi outage instead of being lost.
+- [ ] UI-tunable camera (frame size / JPEG quality) in the Device tab.
+- [x] Live diagnostics Status tab (heap, PSRAM, uptime, RSSI, IP, last upload,
+      reset reason, boot count). *(done)*
+
+### Maintenance
+- [ ] Decide whether to port these fixes back into the original Arduino-IDE
+      sketch at `../esp32_firmware/esp32_firmware.ino`.

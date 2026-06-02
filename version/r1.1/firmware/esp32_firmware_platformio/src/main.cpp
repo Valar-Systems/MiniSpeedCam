@@ -55,6 +55,7 @@
 Preferences preferences;  // NVS-backed key/value store for WiFi creds and user settings
 
 #include "variables.h"
+#include "diagnostics.h"
 #include "camera.h"
 #include "radar.h"
 #include "api.h"
@@ -80,6 +81,10 @@ void taskCore1(void* parameter);
 void setup() {
   Serial.begin(115200);
 
+  Serial.println();
+  Serial.println("=== MiniSpeedCam r1.1 (PlatformIO) ===");
+  Serial.printf("[BOOT] heap=%u psram=%u\n", (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getFreePsram());
+
   // GPIO setup
   pinMode(ESP_WAKEUP_PIN, INPUT);
   pinMode(WIFI_RESET_PIN, INPUT_PULLUP);  // Active-low button; enable internal pull-up so the pin idles HIGH (no spurious resets)
@@ -97,13 +102,15 @@ void setup() {
   int camera_attempts = 0;
   while (cameraSetup() == 0 && camera_attempts < 3) {
     camera_attempts++;
-    Serial.printf("Camera init failed, retry %d/3\n", camera_attempts);
+    Serial.printf("[CAM] init failed, retry %d/3\n", camera_attempts);
     esp_camera_deinit();  // release any partial init before re-attempting
     delay(250);
     cameraPowerOn();
   }
   if (camera_attempts >= 3) {
-    Serial.println("WARNING: camera init failed after 3 attempts; photo capture will not work");
+    Serial.println("[CAM] FAILED after 3 attempts; photo capture disabled");
+  } else {
+    Serial.println("[CAM] ready");
   }
 
   SPIFFS.begin(true);
@@ -111,12 +118,14 @@ void setup() {
 
   // load saved variables
   preferences.begin("local", false);
+  diagnosticsLogBoot();  // record reset reason + bump persisted boot counter for the Status tab
   ssid = preferences.getString("ssid", "NOT_SET");
   password = preferences.getString("pass", "NOT_SET");
   camera_id = preferences.getString("camera_id", "NOT_SET");  // Create an account and camera at tachtracker.com
   min_speed = preferences.getInt("min_speed", 3);             // The minimum speed (MPH) that the tracker should track any vehicle and upload data
   photo_speed = preferences.getInt("photo_speed", 10);        // Cars speed (MPH) when photo should be taken
   is_kph = preferences.getBool("is_kph", 0);                  // Cars speed (MPH) when photo should be taken
+  power_saver = preferences.getBool("power_saver", true);     // true = drop WiFi during idle (default); false = never sleep
 
   // Connect CDM324 sensor
   Serial.println("Connecting CDM324");
@@ -128,6 +137,11 @@ void setup() {
   issue_cdm324_reset();
   // Connect to WiFi or create Access Point
   connectWifiAP();
+  if (WiFi.getMode() == WIFI_STA) {
+    Serial.printf("[WIFI] STA ip=%s\n", WiFi.localIP().toString().c_str());
+  } else {
+    Serial.printf("[WIFI] AP ip=%s\n", WiFi.softAPIP().toString().c_str());
+  }
 
   // Load ESPUI elements
   load_espui();
@@ -147,6 +161,8 @@ void setup() {
   // lets a second event arrive while one is still uploading; deeper backlogs
   // are dropped (with a log) in taskCore1.
   uploadQueue = xQueueCreate(2, sizeof(UploadRequest));
+
+  Serial.printf("[BOOT] setup complete (heap=%u); starting tasks\n", (unsigned)ESP.getFreeHeap());
 
   xTaskCreatePinnedToCore(
     taskCore1,  // Task function
@@ -214,17 +230,21 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
       speed = get_speed(false);  // Get speed (MPH) from STM32 via UART
     }
 
+    updateSpeedDisplay();   // push the live reading to the ESPUI "Current Speed" label
+    updateStatusDisplay();  // refresh the ESPUI Status tab (~1 Hz, self-throttled)
+
     //Serial.println(speed);  // TESTING
 
     /* SLEEP - 120 Seconds after startup
-     *  Gives time for user to make changes over WiFi
+     *  Gives time for user to make changes over WiFi.
+     *  Skipped entirely when Power-Saver Mode is off (device stays awake).
      */
 
-    if (wake_flag == true) {
+    if (power_saver && wake_flag == true) {
       if (millis() >= sleep_time) {              // Only if 120 seconds passed
         if (digitalRead(ESP_WAKEUP_PIN) == 0) {  // Only if STM not measuring data
           wake_flag = false;
-          Serial.println("Going to sleep 1");  // Go to sleep
+          Serial.println("[PWR] idle: WiFi off (post-boot grace elapsed)");
 
           //esp_light_sleep_start(); // Do not sleep in version 1.1
           WiFi.disconnect(true);  // Disconnect from network, optionally true to remove credentials
@@ -238,14 +258,14 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
       }
     }
 
-    /* SLEEP - 5 seconds of no activity on radar */
+    /* SLEEP - 5 seconds of no activity on radar (Power-Saver Mode only) */
     unsigned long currentMillis = millis();
 
-    if (wake_flag == false) {
+    if (power_saver && wake_flag == false) {
       if (speed == 0) {  // Check if speed is 0
         if (currentMillis - previousMillis >= interval) {
           previousMillis = currentMillis;      // Save the last time
-          Serial.println("Going to sleep 2");  // Go to sleep
+          Serial.println("[PWR] idle: WiFi off (no radar activity 5s)");
 
           //esp_light_sleep_start(); // Do not Go to sleep on R1.1 because USB will disconnect
           WiFi.disconnect(true);  // Disconnect from network, optionally true to remove credentials
@@ -272,9 +292,7 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
     if (ignore_flag == false) {
       if (speed >= min_speed) {
 
-        Serial.println("Min speed triggered");
-        Serial.println(min_speed);
-        Serial.println(speed);
+        Serial.printf("[RUN] start: speed=%d >= min_speed=%d\n", speed, min_speed);
 
         delay(100);
         maxSpeed = 0;               // Tracks the max speed over the entire pass
@@ -283,6 +301,7 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
 
         while (speed >= min_speed) {  // Track the car's maximum speed over the whole pass.
           speed = get_speed(is_kph);  // Get speed (KPH or MPH per setting) from STM32 via UART
+          updateSpeedDisplay();       // keep the ESPUI readout live during the pass
 
           if (speed > maxSpeed) {
             maxSpeed = speed;
@@ -299,9 +318,6 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
           delay(100);
         }
 
-        Serial.print("MAX maxSpeed: ");
-        Serial.println(maxSpeed);
-
         // The run has ended, so maxSpeed is final. Hand it to Core 0 as a
         // single upload request. A photo is attached only if a capture
         // actually succeeded; otherwise it uploads speed-only.
@@ -309,8 +325,9 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
         req.speed_actual = maxSpeed;
         req.has_photo = (fb != nullptr);
         req.fb = fb;
+        Serial.printf("[RUN] end: maxSpeed=%d has_photo=%d -> enqueue\n", maxSpeed, (int)req.has_photo);
         if (xQueueSend(uploadQueue, &req, 0) != pdTRUE) {
-          Serial.println("Upload queue full, dropping event");
+          Serial.println("[RUN] upload queue FULL, dropping event");
           if (fb != nullptr) {
             esp_camera_fb_return(fb);  // avoid leaking the framebuffer
           }
@@ -341,6 +358,7 @@ void taskCore0(void* parameter) {
 
     UploadRequest req;
     if (xQueueReceive(uploadQueue, &req, pdMS_TO_TICKS(200)) == pdTRUE) {
+      Serial.printf("[UPLOAD] dequeued event: speed=%d has_photo=%d\n", req.speed_actual, (int)req.has_photo);
       sendUpload(req);
       if (req.fb != nullptr) {
         esp_camera_fb_return(req.fb);  // release the framebuffer Core 1 captured
@@ -348,6 +366,7 @@ void taskCore0(void* parameter) {
     }
 
     if (connect_wifi == true) {
+      Serial.println("[WIFI] reconnect requested");
       connectWifi();
       connect_wifi = false;
     }

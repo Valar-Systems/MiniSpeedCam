@@ -336,7 +336,9 @@ private:
  */
 void sendUpload(const UploadRequest& req) {
 
-  Serial.println("sendUpload");
+  Serial.printf("[UPLOAD] start: %s, heap=%u\n",
+                (req.has_photo && req.fb != nullptr) ? "photo" : "speed-only",
+                (unsigned)ESP.getFreeHeap());
 
   if (WiFi.getMode() != WIFI_STA) {
     Serial.println("Not in STATION MODE");
@@ -380,7 +382,7 @@ void sendUpload(const UploadRequest& req) {
     String epilogue = "\"}}";
 
     StreamingUploadBody body(prologue, req.fb->buf, req.fb->len, epilogue);
-    Serial.printf("Streaming POST (%u byte body)\n", (unsigned)body.totalSize());
+    Serial.printf("[UPLOAD] streaming POST, body=%u bytes\n", (unsigned)body.totalSize());
     httpsResponseCode = https.sendRequest("POST", &body, body.totalSize());
   } else {
     // Speed-only event (no photo): short, fully-buffered JSON body.
@@ -389,12 +391,13 @@ void sendUpload(const UploadRequest& req) {
     json += "\",\"speed_actual\":\"";
     json += req.speed_actual;
     json += "\"}";
-    Serial.println("Sending speed-only POST");
+    Serial.println("[UPLOAD] speed-only POST");
     httpsResponseCode = https.POST(json);
   }
 
-  Serial.print("HTTP Response code: ");
-  Serial.println(httpsResponseCode);
+  Serial.printf("[UPLOAD] HTTP %d %s\n", httpsResponseCode,
+                (httpsResponseCode >= 200 && httpsResponseCode < 300) ? "PASS" : "FAIL");
+  diagnosticsRecordUpload(httpsResponseCode);  // surface the result on the ESPUI Status tab
 
   if (httpsResponseCode > 0) {
     payload = https.getString();
@@ -403,4 +406,5 @@ void sendUpload(const UploadRequest& req) {
 
   // Free resources
   https.end();
+  Serial.printf("[UPLOAD] done, heap=%u\n", (unsigned)ESP.getFreeHeap());
 }

@@ -38,6 +38,27 @@ void speedUnitsCall(Control* sender, int value) {
 }
 
 /**
+ * Toggle Power-Saver Mode.
+ *
+ * @param sender ESPUI Switcher control.
+ * @param value  S_ACTIVE   = power-saver on  (radar loop drops WiFi when idle),
+ *               S_INACTIVE = power-saver off (device never sleeps, WiFi stays up).
+ */
+void powerSaverCall(Control* sender, int value) {
+  switch (value) {
+    case S_ACTIVE:
+      power_saver = true;
+      break;
+    case S_INACTIVE:
+      power_saver = false;
+      connect_wifi = true;  // ask Core 0 to bring WiFi back immediately (no-op if already up)
+      break;
+  }
+  preferences.putBool("power_saver", power_saver);
+  Serial.printf("[PWR] Power-Saver Mode %s\n", power_saver ? "ON" : "OFF");
+}
+
+/**
  * Persist the minimum speed at which a tracking run begins.
  * Below this value, samples are ignored entirely.
  */
@@ -112,11 +133,27 @@ void buttonClearNetworkCall(Control* sender, int type) {
   }
 }
 
+// ----- Status tab live-update handles -----
+// Label controls created in load_espui() and refreshed by
+// updateStatusDisplay(). Like updateSpeedDisplay(), that runs on Core 1 so
+// all ESPUI WebSocket writes come from a single task.
+static uint16_t status_speed_label = 0;
+static uint16_t status_heap_label = 0;
+static uint16_t status_psram_label = 0;
+static uint16_t status_uptime_label = 0;
+static uint16_t status_rssi_label = 0;
+static uint16_t status_ip_label = 0;
+static uint16_t status_last_upload_label = 0;
+static uint16_t status_reset_reason_label = 0;
+static uint16_t status_boot_count_label = 0;
+
 /**
  * Build the ESPUI control tree and start serving it.
  *
  * Tab 1 ("Device"):
+ *   - Live speed readout (updated by taskCore1 via updateSpeedDisplay())
  *   - MPH/KPH switcher
+ *   - Power-Saver Mode switcher (drop WiFi when idle vs. never sleep)
  *   - Minimum speed (run threshold)
  *   - Photo speed (capture threshold)
  *
@@ -124,13 +161,21 @@ void buttonClearNetworkCall(Control* sender, int type) {
  *   - Clear Settings button
  *   - Network / Password / Camera ID text inputs
  *   - Save Settings button
+ *
+ * Tab 3 ("Status"):
+ *   - Live diagnostics (speed, free heap/PSRAM, uptime, RSSI, IP, last
+ *     upload HTTP code, reset reason, boot count). Refreshed ~1 Hz from
+ *     updateStatusDisplay().
  */
 void load_espui(void) {
   uint16_t tab1 = ESPUI.addControl(ControlType::Tab, "Device", "Device");
   uint16_t tab2 = ESPUI.addControl(ControlType::Tab, "Wifi Settings", "Wifi Settings");
+  uint16_t tab3 = ESPUI.addControl(ControlType::Tab, "Status", "Status");
 
   //tab1: Device settings
+  labelSpeed = ESPUI.addControl(ControlType::Label, "Current Speed", "—", ControlColor::Turquoise, tab1);
   ESPUI.addControl(ControlType::Switcher, "MPH/KPH:", String(is_kph), ControlColor::Alizarin, tab1, &speedUnitsCall);
+  ESPUI.addControl(ControlType::Switcher, "Power-Saver Mode (drop WiFi when idle):", String(power_saver), ControlColor::Alizarin, tab1, &powerSaverCall);
   ESPUI.addControl(ControlType::Number, "Minimum Speed:", String(min_speed), ControlColor::Alizarin, tab1, &minSpeedCall);
   ESPUI.addControl(ControlType::Number, "Photo Speed:", String(photo_speed), ControlColor::Alizarin, tab1, &photoSpeedCall);
 
@@ -148,6 +193,17 @@ void load_espui(void) {
 
   //Button: Save
   ESPUI.addControl(ControlType::Button, "Save Settings", "SAVE", ControlColor::Emerald, tab2, &buttonSaveNetworkCall);
+
+  //tab3: Status (live diagnostics, refreshed by updateStatusDisplay())
+  status_speed_label        = ESPUI.addControl(ControlType::Label, "Current Speed",     "—",          ControlColor::Peterriver, tab3);
+  status_heap_label         = ESPUI.addControl(ControlType::Label, "Free heap (B)",     "0",          ControlColor::Peterriver, tab3);
+  status_psram_label        = ESPUI.addControl(ControlType::Label, "Free PSRAM (B)",    "0",          ControlColor::Peterriver, tab3);
+  status_uptime_label       = ESPUI.addControl(ControlType::Label, "Uptime",            "0h 00m 00s", ControlColor::Peterriver, tab3);
+  status_rssi_label         = ESPUI.addControl(ControlType::Label, "WiFi RSSI (dBm)",   "n/a",        ControlColor::Peterriver, tab3);
+  status_ip_label           = ESPUI.addControl(ControlType::Label, "IP",                "n/a",        ControlColor::Peterriver, tab3);
+  status_last_upload_label  = ESPUI.addControl(ControlType::Label, "Last upload HTTP",  "n/a",        ControlColor::Peterriver, tab3);
+  status_reset_reason_label = ESPUI.addControl(ControlType::Label, "Last reset reason", diagnosticsResetReason(),        ControlColor::Peterriver, tab3);
+  status_boot_count_label   = ESPUI.addControl(ControlType::Label, "Boot count",        String(diagnosticsBootCount()),  ControlColor::Peterriver, tab3);
 
   /*
      * .begin loads and serves all files from PROGMEM directly.
@@ -167,4 +223,53 @@ void load_espui(void) {
      */
 
   ESPUI.begin("ESPUI Control");
+}
+
+/**
+ * Push the live speed reading to the ESPUI "Current Speed" label.
+ *
+ * Called from taskCore1 (Core 1) on every radar poll. Throttled to ~3 Hz and
+ * only sends when the value changes, so the WebSocket isn't flooded while the
+ * speed sits at a steady value. Safe to call before/while no client is
+ * connected — ESPUI simply has no one to push to.
+ */
+void updateSpeedDisplay(void) {
+  static unsigned long lastUpdate = 0;
+  static int lastShown = 0;
+  static bool initialized = false;
+
+  if (initialized && speed == lastShown) return;          // nothing changed; skip
+  unsigned long now = millis();
+  if (initialized && (now - lastUpdate) < 300) return;    // throttle to ~3 Hz
+
+  lastUpdate = now;
+  lastShown = speed;
+  initialized = true;
+  ESPUI.updateLabel(labelSpeed, String(speed) + (is_kph ? " KPH" : " MPH"));
+}
+
+/**
+ * Refresh the Status-tab labels (heap, PSRAM, uptime, RSSI, IP, etc.).
+ *
+ * Called from taskCore1 (the only task that touches ESPUI) and throttled to
+ * ~1 Hz, since each updateLabel broadcasts to every connected client. Reads
+ * cross-task data (speed, last-upload code) that is written elsewhere as
+ * plain scalars — benign for a display refresh.
+ */
+void updateStatusDisplay(void) {
+  static unsigned long last_ms = 0;
+  if (millis() - last_ms < 1000) return;
+  last_ms = millis();
+
+  char uptime_buf[32];
+  diagnosticsFormatUptime(uptime_buf, sizeof(uptime_buf));
+
+  bool connected = (WiFi.status() == WL_CONNECTED);
+  ESPUI.updateLabel(status_speed_label, String(speed) + (is_kph ? " KPH" : " MPH"));
+  ESPUI.updateLabel(status_heap_label, String(ESP.getFreeHeap()));
+  ESPUI.updateLabel(status_psram_label, String(ESP.getFreePsram()));
+  ESPUI.updateLabel(status_uptime_label, String(uptime_buf));
+  ESPUI.updateLabel(status_rssi_label, connected ? String(WiFi.RSSI()) : String("n/a"));
+  ESPUI.updateLabel(status_ip_label, connected ? WiFi.localIP().toString() : String("n/a"));
+  ESPUI.updateLabel(status_last_upload_label, String(diagnosticsLastUploadCode()));
 }
