@@ -71,16 +71,34 @@ void connectWifiAP() {
 
   } else {
     Serial.println("\nCreating access point...");
-    WiFi.mode(WIFI_AP);
-    WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
-    WiFi.softAP(HOSTNAME);
 
-    connect_timeout = 20;
-    do {
-      delay(250);
-      Serial.print(",");
-      connect_timeout--;
-    } while (connect_timeout);
+    // Cleanly tear down the failed STA attempt before bringing the radio up
+    // as an AP. Going through WIFI_OFF first avoids leaving the driver in the
+    // half-configured state that can make softAP() silently fail to start.
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    delay(100);
+    WiFi.mode(WIFI_AP);
+
+    bool cfg = WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
+    if (!cfg) Serial.println("[AP] softAPConfig() failed");
+
+    // softAP() can transiently fail right after a STA teardown; retry a few
+    // times rather than booting with no portal and no indication why.
+    bool ap_up = false;
+    for (int attempt = 1; attempt <= 3 && !ap_up; attempt++) {
+      ap_up = WiFi.softAP(HOSTNAME);  // open AP (no password) named HOSTNAME
+      if (!ap_up) {
+        Serial.printf("[AP] softAP() failed, retry %d/3\n", attempt);
+        delay(500);
+      }
+    }
+
+    if (ap_up) {
+      Serial.printf("[AP] up: SSID=\"%s\" ip=%s\n", HOSTNAME, WiFi.softAPIP().toString().c_str());
+    } else {
+      Serial.println("[AP] FAILED to start access point");
+    }
   }
 }
 
@@ -96,6 +114,14 @@ void connectWifi() {
 
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("Already connected WiFi");
+    return;
+  }
+
+  // No credentials stored yet: the device is intentionally in AP config mode.
+  // Bail BEFORE switching to STA so we don't tear down the soft-AP that
+  // connectWifiAP() brought up (and that the user needs to enter creds).
+  if (ssid == "NOT_SET" || ssid.isEmpty()) {
+    Serial.println("No WiFi credentials stored; staying in AP mode");
     return;
   }
 
@@ -144,20 +170,33 @@ void disconnectWifi() {
 /**
  * Service the WiFi reset push-button.
  *
- * Active-low button on WIFI_RESET_PIN. Polled once per Core 1 iteration:
- * if held for ~3 seconds, the stored SSID/password in NVS are overwritten
- * with placeholder values and the ESP32 reboots, which causes the next
+ * Active-low button on WIFI_RESET_PIN. Polled once per Core 1 iteration.
+ * Non-blocking: instead of stalling the loop with delay(3000), it records
+ * when a continuous press began and fires only once the button has been
+ * held LOW for >= WIFI_RESET_HOLD_MS. Releasing the button (pin returns
+ * HIGH) clears the timer, so the 3 seconds must be a single sustained
+ * hold rather than the sum of brief taps.
+ *
+ * On trigger, the stored SSID/password in NVS are overwritten with
+ * placeholder values and the ESP32 reboots, which causes the next
  * connectWifiAP() to fall through to soft-AP mode for reconfiguration.
  */
 void wifiResetButton() {
-  if (digitalRead(WIFI_RESET_PIN) == LOW) {    // Button is pressed (LOW due to pull-up)
-    delay(3000);                               // delay 3 seconds
-    if (digitalRead(WIFI_RESET_PIN) == LOW) {  // Confirm button press
-      Serial.println("Reset button pressed. Resetting Wi-Fi...");
+  static const unsigned long WIFI_RESET_HOLD_MS = 3000;
+  static unsigned long pressStart = 0;  // millis() when the current hold began; 0 = not pressed
+
+  if (digitalRead(WIFI_RESET_PIN) == LOW) {  // Button is pressed (LOW due to pull-up)
+    unsigned long now = millis();
+    if (pressStart == 0) {
+      pressStart = now ? now : 1;  // start timing; avoid 0 (the "not pressed" sentinel) on the millis() rollover tick
+    } else if (now - pressStart >= WIFI_RESET_HOLD_MS) {
+      Serial.println("Reset button held 3s. Resetting Wi-Fi...");
       preferences.putString("ssid", "ssid");  // This replaces the stored wifi network with a random value
       preferences.putString("pass", "pass");  // This replaces the stored wifi network with a random value
       ESP.restart();
     }
+  } else {
+    pressStart = 0;  // released before the threshold; reset so taps don't accumulate
   }
 }
 
@@ -172,7 +211,13 @@ void sendLocalIP() {
   Serial.println("Sending Local IP address");
 
   //connectWifi();
-  
+
+  // Keyed by camera on the server; "NOT_SET" has no record, so don't bother.
+  if (camera_id == "NOT_SET" || camera_id.isEmpty()) {
+    Serial.println("camera_id not configured; skipping IP announce");
+    return;
+  }
+
   if (WiFi.getMode() != WIFI_STA) {
     Serial.println("Not in STATION MODE");
     return;
@@ -339,6 +384,14 @@ void sendUpload(const UploadRequest& req) {
   Serial.printf("[UPLOAD] start: %s, heap=%u\n",
                 (req.has_photo && req.fb != nullptr) ? "photo" : "speed-only",
                 (unsigned)ESP.getFreeHeap());
+
+  // No camera configured: the server has no record for "NOT_SET" and rejects
+  // the POST with 400 MISSING_DATA. Skip the upload rather than burning a
+  // connection + TLS handshake on a request that can only fail.
+  if (camera_id == "NOT_SET" || camera_id.isEmpty()) {
+    Serial.println("[UPLOAD] skipped: camera_id not configured");
+    return;
+  }
 
   if (WiFi.getMode() != WIFI_STA) {
     Serial.println("Not in STATION MODE");

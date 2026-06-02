@@ -80,6 +80,11 @@ void taskCore1(void* parameter);
  */
 void setup() {
   Serial.begin(115200);
+  // On native-USB CDC the port enumerates ~1-2s after reset, so early prints
+  // are lost if we don't wait for the host to attach. Bound the wait so the
+  // device never hangs when running headless (no monitor) in the field.
+  unsigned long serialWaitStart = millis();
+  while (!Serial && millis() - serialWaitStart < 2000) { delay(10); }
 
   Serial.println();
   Serial.println("=== MiniSpeedCam r1.1 (PlatformIO) ===");
@@ -233,14 +238,22 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
     updateSpeedDisplay();   // push the live reading to the ESPUI "Current Speed" label
     updateStatusDisplay();  // refresh the ESPUI Status tab (~1 Hz, self-throttled)
 
-    //Serial.println(speed);  // TESTING
+    // Echo the live speed to the serial monitor, throttled to ~1 Hz so the
+    // fast radar-poll loop doesn't flood the console.
+    static unsigned long lastSpeedPrint = 0;
+    if (millis() - lastSpeedPrint >= 1000) {
+      lastSpeedPrint = millis();
+      Serial.printf("[SPEED] %d %s\n", speed, is_kph ? "kph" : "mph");
+    }
 
     /* SLEEP - 120 Seconds after startup
      *  Gives time for user to make changes over WiFi.
      *  Skipped entirely when Power-Saver Mode is off (device stays awake).
      */
 
-    if (power_saver && wake_flag == true) {
+    // Never power down WiFi while unconfigured: the soft-AP must stay up so
+    // the user can open the portal and enter credentials (ssid == "NOT_SET").
+    if (power_saver && ssid != "NOT_SET" && wake_flag == true) {
       if (millis() >= sleep_time) {              // Only if 120 seconds passed
         if (digitalRead(ESP_WAKEUP_PIN) == 0) {  // Only if STM not measuring data
           wake_flag = false;
@@ -261,7 +274,7 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
     /* SLEEP - 5 seconds of no activity on radar (Power-Saver Mode only) */
     unsigned long currentMillis = millis();
 
-    if (power_saver && wake_flag == false) {
+    if (power_saver && ssid != "NOT_SET" && wake_flag == false) {
       if (speed == 0) {  // Check if speed is 0
         if (currentMillis - previousMillis >= interval) {
           previousMillis = currentMillis;      // Save the last time
@@ -282,7 +295,11 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
 
     // Checks if wifi is disconnected and sets connect flag to true. Connection will occur on Core 0
     if (digitalRead(ESP_WAKEUP_PIN) == 1) { // Check if speed detected on radar first. Use interrupt for this instead?
-      if (WiFi.status() != WL_CONNECTED) {
+      // Only request a reconnect when we actually have credentials to use.
+      // In AP config mode (ssid == "NOT_SET") WiFi.status() is never
+      // WL_CONNECTED, so without this guard we'd flag a reconnect every loop
+      // and connectWifi() would tear the soft-AP down.
+      if (ssid != "NOT_SET" && !ssid.isEmpty() && WiFi.status() != WL_CONNECTED) {
         connect_wifi = true;
       }
       // Power on camera here? Need to check if it's powered down first
