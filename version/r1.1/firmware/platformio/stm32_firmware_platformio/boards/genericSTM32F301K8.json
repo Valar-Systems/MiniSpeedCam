@@ -1,0 +1,25 @@
+{
+  "build": {
+    "cpu": "cortex-m4",
+    "extra_flags": "-DSTM32F3 -DSTM32F301x8",
+    "f_cpu": "64000000L",
+    "mcu": "stm32f301k8u6",
+    "product_line": "STM32F301x8"
+  },
+  "debug": {
+    "default_tools": ["stlink"],
+    "jlink_device": "STM32F301K8",
+    "openocd_target": "stm32f3x",
+    "svd_path": "STM32F301x8.svd"
+  },
+  "frameworks": ["stm32cube"],
+  "name": "Generic STM32F301K8U6 (16k RAM, 64k Flash)",
+  "upload": {
+    "maximum_ram_size": 16384,
+    "maximum_size": 65536,
+    "protocol": "stlink",
+    "protocols": ["stlink", "jlink", "blackmagic", "cmsis-dap", "serial"]
+  },
+  "url": "https://www.st.com/en/microcontrollers-microprocessors/stm32f301k8.html",
+  "vendor": "ST"
+}
