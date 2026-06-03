@@ -37,7 +37,8 @@ STM32, polls it, and acts on the results.
         │                   │                       │                   │
    NRST │ ◄─────────────────┼───────────────────────┤ GPIO47  (reset)   │
         │                   │   active-low reset    │                   │
-        │                   │       (reserved)      │ GPIO2   (STM wake)│
+    PA4 │ GPIO_IN  ◄────────┼───────────────────────┤ GPIO2   (radar    │
+        │ (radar blank)     │   WiFi-TX blank       │          blank)   │
         └──────────────────┘                        └──────────────────┘
 ```
 
@@ -49,7 +50,7 @@ STM32, polls it, and acts on the results.
 | Speed UART RX | `PA10` (USART1_RX) | `GPIO41` (TX) | ESP → STM | Single-byte query commands. |
 | Motion / wake flag | `PA5` (GPIO out) | `GPIO1` (`ESP_WAKEUP_PIN`, in) | STM → ESP | HIGH = a valid (non-zero) speed is being reported; LOW = no motion. ESP firmware interprets this as "~≥5 mph motion." |
 | STM32 reset | `NRST` | `GPIO47` (`STM32_RESET_PIN`, out) | ESP → STM | Active-low. ESP pulses low ~20 ms to reset the radar MCU. |
-| STM wake (reserved) | — | `GPIO2` (`STM_WAKEUP_PIN`) | ESP → STM | Wired but currently unused. |
+| Radar blank | `PA4` (in, pull-down) | `GPIO2` (`RADAR_BLANK_PIN`, out) | ESP → STM | ESP drives **HIGH** while transmitting a WiFi burst (upload / (re)connect); the STM32 **discards** any FFT frame seen while it's high. Was the reserved `STM_WAKEUP` line. |
 | Debug UART (unused by link) | `PA2`/`PA3` (USART2) | — | — | USART2 @ 115200 is initialized on the STM32 but not part of the ESP link (debug header). |
 
 ## UART protocol (USART1, 1 Mbaud, 8N1)
@@ -104,6 +105,21 @@ drives it **HIGH** whenever the currently reported speed is non-zero (valid), an
 **LOW** when no motion is detected. The ESP reads it to gate sleep and
 WiFi-reconnect decisions. (Hardware light-sleep wake-on-this-pin is wired but
 commented out in rev 1.1, since USB would disconnect on sleep.)
+
+### Radar blank — `GPIO2` (`RADAR_BLANK_PIN`) → `PA4`
+A WiFi-TX blanking handshake that attacks the rev-1.1 noise problem at its source.
+The ESP32 and CDM324 share a supply rail, so the ESP's WiFi TX current bursts slump
+the rail and corrupt the radar reads. The ESP drives this line **HIGH** for the
+duration of each WiFi burst it controls — HTTPS uploads (`sendUpload`/`sendLocalIP`)
+and WiFi (re)connects (`connectWifi`/`connectWifiAP`) — via a depth-counted
+`RadarBlankGuard` so nested calls keep it asserted until the outermost scope exits.
+The STM32 reads `PA4` at the top of each FFT frame (`analog_compute_fft_on_cplted_sequence`)
+and, when it's high, **discards that frame** (holds the previous median, skips the
+FFT). This is a direct "this frame is contaminated" flag — more reliable than
+inferring it from the noise statistics. `PA4` has an internal pull-down so it reads
+"not blanking" while the ESP is booting / the line floats. The `DBG` diagnostic
+dump on USART2 shows `blank=1` on a discarded frame. Was the reserved `STM_WAKEUP`
+line.
 
 ### Reset — `GPIO47` → `NRST`
 The ESP owns the STM32's reset. At boot it pulses `STM32_RESET_PIN` low for ~20 ms

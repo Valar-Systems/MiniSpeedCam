@@ -48,7 +48,8 @@
 #define RX_GPIO 42                   // UART1 RX from STM32 (speed reports)
 #define TX_GPIO 41                   // UART1 TX to STM32 (speed query commands)
 #define ESP_WAKEUP_PIN GPIO_NUM_1    // STM32 pulls HIGH when motion >= ~5mph is detected
-#define STM_WAKEUP_PIN GPIO_NUM_2    // Reserved: ESP -> STM wake signal
+#define STM_WAKEUP_PIN GPIO_NUM_2    // (was the reserved STM_WAKEUP line; now the radar-blank line below)
+#define RADAR_BLANK_PIN STM_WAKEUP_PIN  // ESP -> STM32 PA4: HIGH during WiFi bursts so the STM32 discards rail-corrupted FFT frames
 #define WIFI_RESET_PIN GPIO_NUM_21   // Active-low button: hold 3s to clear stored WiFi creds
 
 #define CAMERA_PWDN_PIN GPIO_NUM_45  // OV2640 power-down (active high)
@@ -145,6 +146,8 @@ void setup() {
   pinMode(ESP_WAKEUP_PIN, INPUT);
   pinMode(WIFI_RESET_PIN, INPUT_PULLUP);  // Active-low button; enable internal pull-up so the pin idles HIGH (no spurious resets)
   pinMode(STM32_RESET_PIN, OUTPUT);
+  pinMode(RADAR_BLANK_PIN, OUTPUT);
+  digitalWrite(RADAR_BLANK_PIN, LOW);  // default: not blanking the radar
   pinMode(CAMERA_PWDN_PIN, OUTPUT);  // Set the camera powerdown pin
   pinMode(CAMERA_RST_PIN, OUTPUT);   // Set the camera reset pin // Causes crash
 

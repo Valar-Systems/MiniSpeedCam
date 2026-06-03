@@ -106,6 +106,7 @@ volatile uint32_t analog_dbg_peak_mag = 0;
 volatile uint32_t analog_dbg_floor_mean = 0;
 volatile uint16_t analog_dbg_bad_count = 0;
 volatile uint8_t analog_dbg_dropped = 0;
+volatile uint8_t analog_dbg_blanked = 0; /* frame discarded due to WiFi-busy line */
 
 /* USART1 (ESP32 link) interrupt-driven RX ring buffer. The ESP polls for speed
  * with single command bytes; the F3 USART has no RX FIFO, so a stray noise byte
@@ -293,7 +294,8 @@ int main(void) {
 						: 0;
 				char dbg_buf[128];
 				int dbg_len = snprintf(dbg_buf, sizeof(dbg_buf),
-						"DBG drop=%u bad=%u bin=%u mag=%lu floor=%lu snrx10=%lu spd=%u\r\n",
+						"DBG blank=%u drop=%u bad=%u bin=%u mag=%lu floor=%lu snrx10=%lu spd=%u\r\n",
+						(unsigned) analog_dbg_blanked,
 						(unsigned) analog_dbg_dropped,
 						(unsigned) analog_dbg_bad_count,
 						(unsigned) analog_dbg_peak_bin,
@@ -538,7 +540,15 @@ static void MX_GPIO_Init(void) {
 	HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
 	/* USER CODE BEGIN MX_GPIO_Init_2 */
-
+	/* PA4 <- ESP32 GPIO2: "WiFi TX busy" blanking line. The ESP drives it HIGH
+	 * around WiFi bursts (uploads/reconnects) that disturb the shared rail; we
+	 * discard any FFT frame seen during that window. Pull-down so it reads
+	 * "not busy" while the ESP is booting / the line is floating. */
+	GPIO_InitStruct.Pin = GPIO_PIN_4;
+	GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+	GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+	HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 	/* USER CODE END MX_GPIO_Init_2 */
 }
 
@@ -784,6 +794,20 @@ uint16_t analog_compute_fft_on_cplted_sequence(BOOL remove_low_freqs) {
 	const uint16_t N = ARRAY_SIZE(analog_result_buffer1);
 	float32_t max_value, floor_mean, mean, stddev;
 	uint32_t max_index;
+
+	/* --- (0) WiFi-TX blanking handshake ---------------------------------- *
+	 * The ESP32 drives PA4 HIGH around its WiFi bursts (uploads / reconnects),
+	 * which slump the shared rail and corrupt the radar reads. When the line is
+	 * asserted, drop this frame outright -- a direct, a-priori "contaminated"
+	 * flag, far more reliable than inferring it from the noise statistics, and
+	 * it skips the FFT entirely so we also save CPU during the burst. The busy
+	 * window lasts many frames, so reading the level here is sufficient. */
+	if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_4) == GPIO_PIN_SET) {
+		analog_dbg_blanked = 1;
+		uint16_t held = analog_buffer_median();
+		return (uint16_t) ((float32_t) held * ANALOG_SAMPLE_RATE_HZ / N);
+	}
+	analog_dbg_blanked = 0;
 
 	/* Convert to float */
 	for (uint16_t i = 0; i < N; i++) {
