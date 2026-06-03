@@ -9,6 +9,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <math.h>
 #include "user/defines.h"
 #include "user/ascii_lib.h"
 #include "arm_math.h"
@@ -30,6 +31,27 @@
 
 #define DOPPLER_Pin GPIO_PIN_0
 #define DOPPLER_GPIO_Port GPIOB
+
+/* --- Noise-robustness tuning (shared 5V rail / ESP32 WiFi interference) --- */
+/* ADC sample rate, Hz (64MHz/128/(1.5+12.5)); used to convert a bin to Hz. */
+#define ANALOG_SAMPLE_RATE_HZ   35714.0f
+/* Minimum peak-to-noise-floor ratio for a frame to count as a detection.
+ * Measured floor: idle/noise peaks ride at a ratio of ~6-13 (snrx10 60-130),
+ * while a real Doppler tone (2048Hz fork) towers at ~70-195 (snrx10 700-1950).
+ * 15 sits in the wide gap: idle reads 0, real targets pass easily. Tunable. */
+#define ANALOG_MIN_SNR          15.0f
+/* Transient rejection (impulsive WiFi-burst noise): count the samples that
+ * deviate more than ANALOG_TRANSIENT_SIGMA from the frame mean, and only
+ * discard the frame once at least ANALOG_TRANSIENT_MIN_BAD of them are out. A
+ * clean -- or even a clipping -- tone stays within ~1.4 sigma so it is never
+ * counted. Deliberately lenient (a single stray sample no longer nukes a
+ * frame): the per-frame SNR test above is the main noise gate. */
+#define ANALOG_TRANSIENT_SIGMA  6.0f
+#define ANALOG_TRANSIENT_MIN_BAD 32
+/* Lowest FFT bin considered a real target. Bins 1-2 sit right against DC and
+ * catch huge impact/drift artifacts (seen at mag >400k), so the search starts
+ * above them. remove_low_freqs raises this further to ~10 (a min-speed gate). */
+#define ANALOG_MIN_BIN          3
 
 /* USER CODE END PD */
 
@@ -64,6 +86,14 @@ float32_t analog_rfft_output[1024];
 uint16_t analog_last_peak_indexes[32];
 uint16_t analog_cur_peak_fill_idx = 0;
 
+/* Per-frame diagnostics, dumped over USART1 when the 'd' command toggles them
+ * on (lets us see why a frame was rejected without an external probe). */
+volatile uint16_t analog_dbg_peak_bin = 0;
+volatile uint32_t analog_dbg_peak_mag = 0;
+volatile uint32_t analog_dbg_floor_mean = 0;
+volatile uint16_t analog_dbg_bad_count = 0;
+volatile uint8_t analog_dbg_dropped = 0;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -85,6 +115,7 @@ static char debug_get_char_from_uart(void);
 
 // Analog
 static uint16_t analog_compute_fft_on_cplted_sequence(BOOL remove_low_freqs);
+static uint16_t analog_buffer_median(void);
 static void analog_output_current_fft_to_uart(uint16_t nb_bins);
 static BOOL analog_get_and_clear_adc_measurement_done(void);
 static void analog_output_conversion_buffer_to_uart(void);
@@ -136,6 +167,11 @@ int main(void) {
 	BOOL remove_low_freqs = FALSE;
 	uint16_t last_fft_return = 0;
 	uint16_t fft_nb_counter = 0;
+	/* TEMPORARY: default-on so the dump is readable without typing 'd' (the VS
+	 * Code PlatformIO monitor does not reliably forward keystrokes). Set back
+	 * to FALSE once diagnosis is done so it doesn't talk over the ESP32 link. */
+	BOOL diag_enabled = TRUE;
+	uint16_t diag_counter = 0;
 
 #ifdef CUR_TRANSIENT_TEST
   	uint16_t temp_counter = 0;
@@ -145,6 +181,16 @@ int main(void) {
 
 	printf("CDM324-V2 fw v%d.%d, compiled %s %s\r\n", FW_MAJOR, FW_MINOR,
 	__DATE__, __TIME__);
+
+	/* Diagnostics go out USART2 (PA2/PA3, the CH340 debug port) at 115200, so
+	 * they don't collide with the ESP32 link on USART1. This boot line confirms
+	 * the CH340 path before any radar signal is present. */
+	{
+		const char dbg_hello[] =
+				"DBG diagnostics active on USART2 @115200\r\n";
+		HAL_UART_Transmit(&huart2, (uint8_t*) dbg_hello,
+				(uint16_t) (sizeof(dbg_hello) - 1), 0xFFFF);
+	}
 
 	/* Analog input init */
 	analog_init();
@@ -194,6 +240,29 @@ int main(void) {
 				analog_output_current_fft_to_uart(150);
 			}
 
+			/* Readable per-frame diagnostics (toggle with 'd'). Throttled so a
+			 * 1Mbaud terminal stays legible while watching a test signal.
+			 * snrx10 is the peak/floor ratio x10 (detection needs >= 40). */
+			if (diag_enabled != FALSE && ++diag_counter >= 5) {
+				diag_counter = 0;
+				uint32_t snr_x10 = (analog_dbg_floor_mean != 0)
+						? (analog_dbg_peak_mag * 10UL / analog_dbg_floor_mean)
+						: 0;
+				char dbg_buf[128];
+				int dbg_len = snprintf(dbg_buf, sizeof(dbg_buf),
+						"DBG drop=%u bad=%u bin=%u mag=%lu floor=%lu snrx10=%lu spd=%u\r\n",
+						(unsigned) analog_dbg_dropped,
+						(unsigned) analog_dbg_bad_count,
+						(unsigned) analog_dbg_peak_bin,
+						(unsigned long) analog_dbg_peak_mag,
+						(unsigned long) analog_dbg_floor_mean,
+						(unsigned long) snr_x10, (unsigned) last_fft_return);
+				if (dbg_len > 0) {
+					HAL_UART_Transmit(&huart2, (uint8_t*) dbg_buf,
+							(uint16_t) dbg_len, 0xFFFF);
+				}
+			}
+
 			/* Commands from UART */
 			char uart_input = debug_get_char_from_uart();
 			if (uart_input == 'a') {
@@ -208,6 +277,9 @@ int main(void) {
 				printf("%d\r\n", (uint16_t) (last_fft_return * 0.2262295));
 			} else if (uart_input == 'm') {
 				printf("%d\r\n", (uint16_t) (last_fft_return * 0.1449275));
+			} else if (uart_input == 'd') {
+				/* Toggle the readable diagnostic dump (see above). */
+				diag_enabled = (diag_enabled == FALSE) ? TRUE : FALSE;
 			}
 		}
 
@@ -559,18 +631,122 @@ void analog_output_current_fft_to_uart(uint16_t nb_bins) {
 			nb_bins * sizeof(float32_t));
 }
 
+/*! \fn     analog_buffer_median(void)
+ *   \brief  Median of the *valid* (non-zero) detections in the rolling buffer
+ *   \return	Median bin index, or 0 if there are no detections in the window
+ *   \note	Zeros are "no target this frame" markers and MUST be excluded: like
+ *   		the original mean, a brief pass occupies only a minority of the
+ *   		~0.9s window, so including zeros would median to 0 and swallow it.
+ *   		Among the detections a median still rejects the wild peak from a
+ *   		single noise-corrupted frame, where a mean would be dragged by it.
+ *   		Insertion sort on the collected samples; runs once per ~29ms frame.
+ */
+uint16_t analog_buffer_median(void) {
+	const uint16_t n = ARRAY_SIZE(analog_last_peak_indexes);
+	uint16_t tmp[ARRAY_SIZE(analog_last_peak_indexes)];
+	uint16_t cnt = 0;
+
+	/* Collect only valid detections (ignore the no-target zeros). */
+	for (uint16_t i = 0; i < n; i++) {
+		if (analog_last_peak_indexes[i] != 0) {
+			tmp[cnt++] = analog_last_peak_indexes[i];
+		}
+	}
+
+	if (cnt == 0) {
+		return 0; /* no detections in the window */
+	}
+
+	for (uint16_t i = 1; i < cnt; i++) {
+		uint16_t key = tmp[i];
+		int j = (int) i - 1;
+		while (j >= 0 && tmp[j] > key) {
+			tmp[j + 1] = tmp[j];
+			j--;
+		}
+		tmp[j + 1] = key;
+	}
+
+	/* Median: middle sample (odd count) or mean of the two central (even). */
+	if (cnt & 1u) {
+		return tmp[cnt / 2];
+	}
+	return (uint16_t) (((uint32_t) tmp[cnt / 2 - 1] + (uint32_t) tmp[cnt / 2]) / 2);
+}
+
 /*! \fn     analog_compute_fft_on_cplted_sequence(BOOL remove_low_freqs)
  *   \brief  Compute FFT on completed adc samples
  *   \param	remove_low_freqs	Set to TRUE to remove low frequencies (~10km/h)
  *   \return	FFT peak, to be converted to kmh or mph
+ *   \note	Hardened against ESP32 WiFi noise on the shared 5V rail:
+ *   		(1) Hann window + DC removal before the FFT (kills leakage),
+ *   		(2) SNR-based validity (rejects broadband bursts),
+ *   		(3) rolling median + slew guard (rejects single bad frames),
+ *   		(4) time-domain transient/clip rejection (drops corrupted frames).
  */
 uint16_t analog_compute_fft_on_cplted_sequence(BOOL remove_low_freqs) {
-	float32_t max_value;
+	const uint16_t N = ARRAY_SIZE(analog_result_buffer1);
+	float32_t max_value, floor_mean, mean, stddev;
 	uint32_t max_index;
 
 	/* Convert to float */
-	for (uint16_t i = 0; i < ARRAY_SIZE(analog_result_buffer1); i++) {
-		analog_temp_float_array[i] = (float) analog_cplt_adc_dest_buf_pt[i];
+	for (uint16_t i = 0; i < N; i++) {
+		analog_temp_float_array[i] = (float32_t) analog_cplt_adc_dest_buf_pt[i];
+	}
+
+	/* --- (4) Time-domain transient / clip rejection ----------------------- *
+	 * A WiFi TX burst on the shared 5V rail appears as an impulsive spike or
+	 * rail clipping in the raw samples. If we see either, this frame's FFT is
+	 * untrustworthy, so drop the whole frame: don't touch the rolling buffer,
+	 * just report its current median so the output simply holds. */
+	{
+		float32_t sum = 0.0f, sumsq = 0.0f;
+		for (uint16_t i = 0; i < N; i++) {
+			float32_t s = analog_temp_float_array[i];
+			sum += s;
+			sumsq += s * s;
+		}
+		mean = sum / (float32_t) N;
+		float32_t variance = (sumsq / (float32_t) N) - (mean * mean);
+		stddev = (variance > 0.0f) ? sqrtf(variance) : 0.0f;
+	}
+	{
+		uint16_t bad = 0;
+		for (uint16_t i = 0; i < N; i++) {
+			if (fabsf(analog_temp_float_array[i] - mean)
+					> ANALOG_TRANSIENT_SIGMA * stddev) {
+				bad++;
+			}
+		}
+		analog_dbg_bad_count = bad;
+		if (bad >= ANALOG_TRANSIENT_MIN_BAD) {
+			analog_dbg_dropped = 1;
+			uint16_t held = analog_buffer_median();
+			return (uint16_t) ((float32_t) held * ANALOG_SAMPLE_RATE_HZ / N);
+		}
+		analog_dbg_dropped = 0;
+	}
+
+	/* --- (1) Remove DC and apply a Hann window before the FFT ------------- *
+	 * Subtracting the mean removes the large mid-rail bias (and most of any
+	 * mid-frame supply droop); the Hann window suppresses spectral leakage so
+	 * transient / broadband energy no longer smears into a false peak.
+	 * The window is generated on the fly with a cosine recurrence
+	 * (a[i+1] = 2*cos(theta)*a[i] - a[i-1]) to avoid a 4KB lookup table on this
+	 * 16KB-RAM part: one multiply per sample, no cosf in the hot loop. */
+	{
+		const float32_t theta = (2.0f * 3.14159265358979f) / (float32_t) (N - 1);
+		const float32_t k = 2.0f * cosf(theta);
+		float32_t a_im1 = cosf(theta); /* a[-1] = cos(theta) */
+		float32_t a_i = 1.0f; /* a[0]  = cos(0) = 1 */
+		for (uint16_t i = 0; i < N; i++) {
+			float32_t hann = 0.5f * (1.0f - a_i);
+			analog_temp_float_array[i] = (analog_temp_float_array[i] - mean)
+					* hann;
+			float32_t a_next = k * a_i - a_im1;
+			a_im1 = a_i;
+			a_i = a_next;
+		}
 	}
 
 	/* RFFT transform */
@@ -578,53 +754,57 @@ uint16_t analog_compute_fft_on_cplted_sequence(BOOL remove_low_freqs) {
 			0);
 
 	/* Calculate magnitude of imaginary coefficients */
-	arm_cmplx_mag_f32(analog_rfft_output, analog_temp_float_array,
-	ARRAY_SIZE(analog_result_buffer1) / 2);
+	arm_cmplx_mag_f32(analog_rfft_output, analog_temp_float_array, N / 2);
 
 	/* Up to here takes 2.4ms in Release configuration on a 64MHz STM32F301 MCU */
 
-	/* Remove low freqs ? */
-	if (remove_low_freqs != FALSE) {
-		memset(analog_temp_float_array, 0,
-				sizeof(analog_temp_float_array[0]) * 10);
+	/* Peak search over the valid speed band: skip DC and (optionally) the
+	 * lowest bins where supply-droop residue lives. remove_low_freqs raises
+	 * the floor to ~10 km/h. This replaces the old explicit bin zeroing. */
+	uint16_t min_bin = (remove_low_freqs != FALSE) ? 10 : ANALOG_MIN_BIN;
+	uint16_t band = (N / 2) - min_bin;
+	arm_max_f32(&analog_temp_float_array[min_bin], band, &max_value, &max_index);
+	max_index += min_bin;
+
+	/* --- (2) SNR-based validity ------------------------------------------ *
+	 * Compare the peak against the mean magnitude of the band (the noise
+	 * floor). A broadband WiFi burst lifts the whole floor, so its peak/floor
+	 * ratio stays low and the frame is rejected; a real Doppler tone towers
+	 * over the floor. This replaces the old absolute "< 100000" threshold,
+	 * which a broadband burst could exceed while carrying no real signal. */
+	{
+		float32_t fsum = 0.0f;
+		for (uint16_t i = min_bin; i < (N / 2); i++) {
+			fsum += analog_temp_float_array[i];
+		}
+		floor_mean = fsum / (float32_t) band;
 	}
+	BOOL valid_detection = (floor_mean > 0.0f)
+			&& (max_value >= ANALOG_MIN_SNR * floor_mean);
 
-	/* Set DC component to 0 */
-	analog_temp_float_array[0] = 0;
+	/* Capture for the 'd' diagnostic dump. */
+	analog_dbg_peak_bin = (uint16_t) max_index;
+	analog_dbg_peak_mag = (uint32_t) max_value;
+	analog_dbg_floor_mean = (uint32_t) floor_mean;
 
-	/* Extract peak frequency */
-	arm_max_f32(analog_temp_float_array, ARRAY_SIZE(analog_result_buffer1) / 2,
-			&max_value, &max_index);
+	/* --- (3) Rolling median ---------------------------------------------- *
+	 * This frame's measurement is just the peak bin (0 if it failed the SNR
+	 * gate). It is pushed into the circular buffer and the output is the median
+	 * of the valid entries -- which on its own rejects isolated bad frames.
+	 * NOTE: do NOT add a slew/jump guard here. A real target appearing is a
+	 * large jump away from the noise-established median, so a jump guard would
+	 * reject every real signal and pin the output to the noise floor. */
+	uint16_t measurement = (valid_detection != FALSE) ? (uint16_t) max_index : 0;
 
-	/* Fill current peak index if peak is valid */
-	if (max_value < 100000) {
-		analog_last_peak_indexes[analog_cur_peak_fill_idx++] = 0;
-	} else {
-		analog_last_peak_indexes[analog_cur_peak_fill_idx++] = max_index;
-	}
-
-	/* Handle buffer wrapover */
+	/* Store into the circular buffer */
+	analog_last_peak_indexes[analog_cur_peak_fill_idx++] = measurement;
 	if (analog_cur_peak_fill_idx == ARRAY_SIZE(analog_last_peak_indexes)) {
 		analog_cur_peak_fill_idx = 0;
 	}
 
-	/* Compute average speed over buffer */
-	float32_t cumul = 0;
-	uint16_t valid_samples = 0;
-	for (uint16_t i = 0; i < ARRAY_SIZE(analog_last_peak_indexes); i++) {
-		if (analog_last_peak_indexes[i] != 0) {
-			cumul += (float32_t) analog_last_peak_indexes[i];
-			valid_samples++;
-		}
-	}
-
-	/* Return averaged speed from this */
-	float32_t max_freq = 0;
-	if (valid_samples != 0) {
-		max_freq = cumul / valid_samples;
-	}
-	max_freq = max_freq * 35714 / ARRAY_SIZE(analog_result_buffer1);
-	return (uint16_t) max_freq;
+	/* Output speed = median bin -> Doppler frequency (Hz). */
+	uint16_t med = analog_buffer_median();
+	return (uint16_t) ((float32_t) med * ANALOG_SAMPLE_RATE_HZ / N);
 }
 
 /* USER CODE END 4 */

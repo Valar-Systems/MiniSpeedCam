@@ -1,0 +1,352 @@
+DBG diagnostics active on USART2 @115200
+
+DBG drop=0 bad=0 bin=3 mag=39949 floor=799 snrx10=499 spd=139
+
+DBG drop=0 bad=0 bin=6 mag=44822 floor=1196 snrx10=374 spd=139
+
+DBG drop=0 bad=0 bin=6 mag=12081 floor=1008 snrx10=119 spd=104
+
+DBG drop=0 bad=0 bin=5 mag=15531 floor=618 snrx10=251 spd=104
+
+DBG drop=0 bad=0 bin=3 mag=13385 floor=602 snrx10=222 spd=104
+
+DBG drop=0 bad=0 bin=4 mag=13808 floor=831 snrx10=166 spd=104
+
+DBG drop=0 bad=0 bin=5 mag=13771 floor=1466 snrx10=93 spd=104
+
+DBG drop=0 bad=0 bin=7 mag=29744 floor=2539 snrx10=117 spd=104
+
+DBG drop=0 bad=0 bin=5 mag=23758 floor=2862 snrx10=83 spd=104
+
+DBG drop=0 bad=0 bin=5 mag=37595 floor=2970 snrx10=126 spd=104
+
+DBG drop=0 bad=0 bin=4 mag=38193 floor=3139 snrx10=121 spd=104
+
+DBG drop=0 bad=0 bin=6 mag=29245 floor=3206 snrx10=91 spd=139
+
+DBG drop=0 bad=0 bin=4 mag=37828 floor=3553 snrx10=106 spd=139
+
+DBG drop=0 bad=0 bin=13 mag=25764 floor=3256 snrx10=79 spd=139
+
+DBG drop=0 bad=0 bin=3 mag=6580 floor=1121 snrx10=58 spd=209
+
+DBG drop=0 bad=0 bin=3 mag=57031 floor=2333 snrx10=244 spd=139
+
+DBG drop=0 bad=0 bin=3 mag=66865 floor=2375 snrx10=281 spd=139
+
+DBG drop=0 bad=0 bin=3 mag=51378 floor=574 snrx10=895 spd=104
+
+DBG drop=0 bad=0 bin=7 mag=2936 floor=459 snrx10=63 spd=104
+
+DBG drop=0 bad=0 bin=7 mag=8889 floor=580 snrx10=153 spd=104
+
+DBG drop=0 bad=0 bin=4 mag=10330 floor=966 snrx10=106 spd=104
+
+DBG drop=0 bad=0 bin=4 mag=16619 floor=1600 snrx10=103 spd=104
+
+DBG drop=0 bad=0 bin=7 mag=31122 floor=2871 snrx10=108 spd=104
+
+DBG drop=0 bad=0 bin=3 mag=29654 floor=3238 snrx10=91 spd=104
+
+DBG drop=0 bad=0 bin=7 mag=47973 floor=3261 snrx10=147 spd=244
+
+DBG drop=0 bad=0 bin=4 mag=35198 floor=3375 snrx10=104 spd=244
+
+DBG drop=0 bad=0 bin=3 mag=33485 floor=3296 snrx10=101 spd=174
+
+DBG drop=0 bad=0 bin=6 mag=37006 floor=3248 snrx10=113 spd=174
+
+DBG drop=0 bad=0 bin=3 mag=46729 floor=3196 snrx10=146 spd=244
+
+DBG drop=0 bad=0 bin=6 mag=41772 floor=3246 snrx10=128 spd=104
+
+DBG drop=0 bad=0 bin=41 mag=17719 floor=3291 snrx10=53 spd=104
+
+DBG drop=0 bad=0 bin=7 mag=32582 floor=2944 snrx10=110 spd=104
+
+DBG drop=0 bad=0 bin=3 mag=19620 floor=3059 snrx10=64 spd=104
+
+DBG drop=0 bad=0 bin=6 mag=45880 floor=3424 snrx10=133 spd=104
+
+DBG drop=0 bad=0 bin=6 mag=42106 floor=3142 snrx10=134 spd=104
+
+DBG drop=0 bad=0 bin=4 mag=34562 floor=3347 snrx10=103 spd=139
+
+DBG drop=0 bad=0 bin=7 mag=26043 floor=3348 snrx10=77 spd=139
+
+DBG drop=0 bad=0 bin=9 mag=22320 floor=3014 snrx10=74 spd=139
+
+DBG drop=0 bad=0 bin=4 mag=40338 floor=3453 snrx10=116 spd=139
+
+DBG drop=0 bad=0 bin=4 mag=33412 floor=3117 snrx10=107 spd=139
+
+DBG drop=0 bad=0 bin=4 mag=49994 floor=3322 snrx10=150 spd=139
+
+DBG drop=0 bad=0 bin=7 mag=41257 floor=3633 snrx10=113 spd=139
+
+DBG drop=0 bad=0 bin=3 mag=21488 floor=3168 snrx10=67 spd=139
+
+DBG drop=0 bad=0 bin=7 mag=37519 floor=3636 snrx10=103 spd=139
+
+DBG drop=0 bad=0 bin=4 mag=30854 floor=3115 snrx10=99 spd=139
+
+DBG drop=0 bad=0 bin=3 mag=32335 floor=3274 snrx10=98 spd=139
+
+DBG drop=0 bad=0 bin=6 mag=31141 floor=3492 snrx10=89 spd=139
+
+DBG drop=0 bad=0 bin=5 mag=21433 floor=3151 snrx10=68 spd=0
+
+DBG drop=0 bad=0 bin=3 mag=42725 floor=3497 snrx10=122 spd=0
+
+DBG drop=0 bad=0 bin=4 mag=34834 floor=2866 snrx10=121 spd=104
+
+DBG drop=0 bad=0 bin=6 mag=37761 floor=3394 snrx10=111 spd=104
+
+DBG drop=0 bad=0 bin=4 mag=37120 floor=3148 snrx10=117 spd=104
+
+DBG drop=0 bad=0 bin=6 mag=26283 floor=3179 snrx10=82 spd=104
+
+DBG drop=0 bad=0 bin=7 mag=41410 floor=3505 snrx10=118 spd=104
+
+DBG drop=0 bad=0 bin=59 mag=66587 floor=3143 snrx10=211 spd=1081
+
+DBG drop=0 bad=0 bin=3 mag=42659 floor=533 snrx10=800 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=317643 floor=2515 snrx10=1262 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=462064 floor=4045 snrx10=1142 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=286401 floor=2101 snrx10=1363 spd=2057
+
+DBG drop=0 bad=0 bin=58 mag=21728 floor=1098 snrx10=197 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=77074 floor=1292 snrx10=596 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=470907 floor=5641 snrx10=834 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=454798 floor=5193 snrx10=875 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=463393 floor=4889 snrx10=947 spd=2057
+
+DBG drop=0 bad=0 bin=58 mag=87926 floor=1712 snrx10=513 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=413279 floor=4076 snrx10=1013 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=460900 floor=3495 snrx10=1318 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=423888 floor=3419 snrx10=1239 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=464210 floor=3503 snrx10=1325 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=449939 floor=4116 snrx10=1093 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=428617 floor=3995 snrx10=1072 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=456846 floor=3890 snrx10=1174 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=458246 floor=3862 snrx10=1186 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=445810 floor=3246 snrx10=1373 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=321497 floor=2299 snrx10=1398 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=96032 floor=1277 snrx10=752 spd=2057
+
+DBG drop=0 bad=0 bin=3 mag=48024 floor=1915 snrx10=250 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=172111 floor=2253 snrx10=763 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=138815 floor=1520 snrx10=913 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=422435 floor=2640 snrx10=1600 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=434652 floor=3298 snrx10=1317 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=451570 floor=3166 snrx10=1426 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=445275 floor=3229 snrx10=1378 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=430885 floor=3180 snrx10=1354 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=435027 floor=3132 snrx10=1388 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=69956 floor=1218 snrx10=574 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=409707 floor=4045 snrx10=1012 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=448121 floor=3637 snrx10=1232 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=421912 floor=3559 snrx10=1185 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=453131 floor=3718 snrx10=1218 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=445324 floor=3644 snrx10=1222 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=162011 floor=1419 snrx10=1141 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=297859 floor=3061 snrx10=973 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=101853 floor=1349 snrx10=755 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=390244 floor=3092 snrx10=1262 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=232417 floor=2171 snrx10=1070 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=190454 floor=1878 snrx10=1014 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=135012 floor=1799 snrx10=750 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=317498 floor=2441 snrx10=1300 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=180860 floor=1518 snrx10=1191 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=336559 floor=1794 snrx10=1876 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=351898 floor=1969 snrx10=1787 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=295574 floor=1903 snrx10=1553 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=274655 floor=1810 snrx10=1517 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=203404 floor=1780 snrx10=1142 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=191906 floor=1647 snrx10=1165 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=164590 floor=1701 snrx10=967 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=153216 floor=1559 snrx10=982 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=97351 floor=1414 snrx10=688 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=48865 floor=2233 snrx10=218 spd=2057
+
+DBG drop=0 bad=0 bin=59 mag=213739 floor=1397 snrx10=1529 spd=2057
+
+DBG drop=0 bad=3 bin=440 mag=1604 floor=250 snrx10=64 spd=2057
+
+DBG drop=0 bad=0 bin=3 mag=154212 floor=1991 snrx10=774 spd=2057
+
+DBG drop=0 bad=0 bin=4 mag=34403 floor=615 snrx10=559 spd=2057
+
+DBG drop=0 bad=0 bin=7 mag=3399 floor=463 snrx10=73 spd=2057
+
+DBG drop=0 bad=0 bin=8 mag=7512 floor=676 snrx10=111 spd=139
+
+DBG drop=0 bad=0 bin=5 mag=13076 floor=1052 snrx10=124 spd=139
+
+DBG drop=0 bad=2 bin=4 mag=14056 floor=1144 snrx10=122 spd=104
+
+DBG drop=0 bad=0 bin=8 mag=32068 floor=2706 snrx10=118 spd=104
+
+DBG drop=0 bad=0 bin=7 mag=38214 floor=3273 snrx10=116 spd=104
+
+DBG drop=0 bad=0 bin=7 mag=39252 floor=3067 snrx10=127 spd=104
+
+DBG drop=0 bad=0 bin=4 mag=39101 floor=3526 snrx10=110 spd=104
+
+DBG drop=0 bad=0 bin=5 mag=31747 floor=3266 snrx10=97 spd=104
+
+DBG drop=0 bad=0 bin=16 mag=65345 floor=4562 snrx10=143 spd=104
+
+DBG drop=0 bad=0 bin=8 mag=16570 floor=1953 snrx10=84 spd=104
+
+DBG drop=0 bad=0 bin=8 mag=18976 floor=2129 snrx10=89 spd=104
+
+DBG drop=0 bad=0 bin=5 mag=14282 floor=1694 snrx10=84 spd=104
+
+DBG drop=0 bad=0 bin=8 mag=20547 floor=1911 snrx10=107 spd=104
+
+DBG drop=0 bad=0 bin=7 mag=29389 floor=3248 snrx10=90 spd=0
+
+DBG drop=0 bad=0 bin=7 mag=40719 floor=3466 snrx10=117 spd=0
+
+DBG drop=0 bad=0 bin=6 mag=21447 floor=3133 snrx10=68 spd=0
+
+DBG drop=0 bad=0 bin=7 mag=29016 floor=3212 snrx10=90 spd=0
+
+DBG drop=0 bad=0 bin=7 mag=31447 floor=3267 snrx10=96 spd=0
+
+DBG drop=0 bad=0 bin=7 mag=36884 floor=3198 snrx10=115 spd=0
+
+DBG drop=0 bad=2 bin=5 mag=10490 floor=1487 snrx10=70 spd=0
+
+DBG drop=0 bad=0 bin=7 mag=30319 floor=2619 snrx10=115 spd=0
+
+DBG drop=0 bad=0 bin=49 mag=21039 floor=3262 snrx10=64 spd=0
+
+DBG drop=0 bad=0 bin=46 mag=22692 floor=3206 snrx10=70 spd=0
+
+DBG drop=0 bad=0 bin=40 mag=16404 floor=2876 snrx10=57 spd=0
+
+DBG drop=0 bad=0 bin=7 mag=35668 floor=3290 snrx10=108 spd=0
+
+DBG drop=0 bad=0 bin=5 mag=25726 floor=3161 snrx10=81 spd=0
+
+DBG drop=0 bad=0 bin=7 mag=21404 floor=3257 snrx10=65 spd=0
+
+DBG drop=0 bad=0 bin=7 mag=38617 floor=3107 snrx10=124 spd=0
+
+DBG drop=0 bad=0 bin=5 mag=27187 floor=3159 snrx10=86 spd=0
+
+DBG drop=0 bad=0 bin=7 mag=24652 floor=3367 snrx10=73 spd=0
+
+DBG drop=0 bad=0 bin=7 mag=29025 floor=3440 snrx10=84 spd=0
+
+DBG drop=0 bad=0 bin=3 mag=31986 floor=3284 snrx10=97 spd=0
+
+DBG drop=0 bad=0 bin=46 mag=19754 floor=3105 snrx10=63 spd=0
+
+DBG drop=0 bad=0 bin=5 mag=27884 floor=3257 snrx10=85 spd=0
+
+DBG drop=0 bad=0 bin=5 mag=25348 floor=3240 snrx10=78 spd=0
+
+DBG drop=0 bad=0 bin=43 mag=19387 floor=3178 snrx10=61 spd=0
+
+DBG drop=0 bad=0 bin=8 mag=29237 floor=3092 snrx10=94 spd=0
+
+DBG drop=0 bad=0 bin=8 mag=30778 floor=3081 snrx10=99 spd=0
+
+DBG drop=0 bad=0 bin=3 mag=30415 floor=3081 snrx10=98 spd=0
+
+DBG drop=0 bad=0 bin=5 mag=26969 floor=3173 snrx10=84 spd=0
+
+DBG drop=0 bad=0 bin=5 mag=24199 floor=3240 snrx10=74 spd=0
+
+DBG drop=0 bad=0 bin=8 mag=32442 floor=3339 snrx10=97 spd=0
+
+DBG drop=0 bad=0 bin=8 mag=34534 floor=3293 snrx10=104 spd=0
+
+DBG drop=0 bad=0 bin=11 mag=21709 floor=3075 snrx10=70 spd=0
+
+DBG drop=0 bad=0 bin=11 mag=31575 floor=3245 snrx10=97 spd=0
+
+DBG drop=0 bad=0 bin=6 mag=19501 floor=3029 snrx10=64 spd=0
+
+DBG drop=0 bad=0 bin=3 mag=22337 floor=3193 snrx10=69 spd=0
+
+DBG drop=0 bad=0 bin=39 mag=23324 floor=3280 snrx10=71 spd=0
+
+DBG drop=0 bad=0 bin=6 mag=26505 floor=3194 snrx10=82 spd=0
+
+DBG drop=0 bad=0 bin=8 mag=30972 floor=3439 snrx10=90 spd=0
+
+DBG drop=0 bad=0 bin=8 mag=33292 floor=3271 snrx10=101 spd=0
+
+DBG drop=0 bad=0 bin=8 mag=32127 floor=3361 snrx10=95 spd=0
+
+DBG drop=0 bad=0 bin=9 mag=25601 floor=3342 snrx10=76 spd=0
+
+DBG drop=0 bad=0 bin=6 mag=30995 floor=3251 snrx10=95 spd=0
+
+DBG drop=0 bad=0 bin=6 mag=26109 floor=3251 snrx10=80 spd=0
+
+DBG drop=0 bad=0 bin=9 mag=28865 floor=3263 snrx10=88 spd=0
+
+DBG drop=0 bad=0 bin=45 mag=24754 floor=3326 snrx10=74 spd=0
+
+DBG drop=0 bad=0 bin=6 mag=36508 floor=3441 snrx10=106 spd=0
+
+DBG drop=0 bad=0 bin=48 mag=18369 floor=2961 snrx10=62 spd=0
+
+DBG drop=0 bad=0 bin=6 mag=23898 floor=3240 snrx10=73 spd=0
+
