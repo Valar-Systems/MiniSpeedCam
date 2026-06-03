@@ -5,11 +5,17 @@
  * a tiny ASCII protocol over UART1 (1,000,000 baud, 8N1):
  *   - Send 'm' to request the latest speed in MPH * 10.
  *   - Send 'k' to request the latest speed in KPH * 10.
- *   - The STM32 replies with an ASCII float terminated by newline.
+ *   - The STM32 replies with "<value>*<CK>\r\n", where <CK> is the XOR of the
+ *     value's ASCII digits as two hex chars (e.g. "298*33"). We verify the
+ *     checksum and reject any reply that doesn't match, so UART corruption
+ *     (frequent on this noisy board) can't inject a plausible-but-wrong speed.
  *
  * On reset, the STM32 emits a banner string which we drain here so it
  * doesn't pollute the first speed query.
  */
+
+#include <stdlib.h>  // strtol, atoi
+#include <string.h>  // strchr
 
 void issue_cdm324_reset(void);
 
@@ -29,9 +35,9 @@ static const float MAX_PLAUSIBLE_SPEED = 250.0f;
  *             (negative / above MAX_PLAUSIBLE_SPEED) and treated as noise.
  */
 float get_speed(bool kmh) {
-  // Drain any stale or noise bytes sitting in the RX buffer so parseFloat()
-  // starts cleanly on the STM32's reply rather than on leftover garbage
-  // (UART line noise from WiFi activity can leave partial/junk bytes here).
+  // Drain any stale or noise bytes sitting in the RX buffer so we parse the
+  // fresh reply rather than leftover garbage (UART line noise from WiFi
+  // activity can leave partial/junk bytes here).
   while (Serial1.available() > 0) {
     Serial1.read();
   }
@@ -44,20 +50,55 @@ float get_speed(bool kmh) {
     Serial1.print('m');
   }
 
-  // Give the STM32 a brief, bounded window to answer before parsing. The
-  // original code checked available() immediately and could race the reply;
-  // parseFloat() would then block up to the stream timeout chewing on noise.
+  // Read the reply line "<value>*<CK>\r\n", bounded to 50ms. We collect a full
+  // line (rather than parseFloat) so the checksum can be verified; the original
+  // could also race the reply and let parseFloat block on noise.
+  char line[16];
+  int idx = 0;
+  bool got_line = false;
   unsigned long start = millis();
-  while (Serial1.available() == 0 && (millis() - start) < 50) {
-    /* wait for the reply, capped at 50ms */
+  while ((millis() - start) < 50) {
+    if (Serial1.available() > 0) {
+      char c = (char)Serial1.read();
+      if (c == '\n') {
+        got_line = true;
+        break;
+      }
+      if (c != '\r' && idx < (int)sizeof(line) - 1) {
+        line[idx++] = c;
+      }
+    }
   }
-  if (Serial1.available() == 0) {
+  line[idx] = '\0';
+
+  if (!got_line) {
     Serial.println("NO DATA");
-    return 0;  // nothing arrived; report no motion rather than a stale value
+    return 0;  // nothing complete arrived; report no motion rather than stale
   }
 
-  // STM32 reports speed * 10 as an integer-style ASCII float; scale back.
-  float speed = Serial1.parseFloat() / 10.0f;
+  // Split "<value>*<CK>" and verify the checksum (XOR of the value's ASCII
+  // digits). A mismatch means the line was corrupted in transit — reject it.
+  // This catches the dangerous case the plausibility ceiling can't: a flipped
+  // bit that lands on another in-range value (e.g. 29 -> 79 mph).
+  char* star = strchr(line, '*');
+  if (star == nullptr) {
+    Serial.printf("[RADAR] reply has no checksum: \"%s\"\n", line);
+    return 0;
+  }
+  *star = '\0';  // terminate the value substring; star+1 is the checksum hex
+  const char* value_str = line;
+  uint8_t rx_ck = (uint8_t)strtol(star + 1, nullptr, 16);
+  uint8_t calc_ck = 0;
+  for (const char* p = value_str; *p != '\0'; p++) {
+    calc_ck ^= (uint8_t)*p;
+  }
+  if (calc_ck != rx_ck) {
+    Serial.printf("[RADAR] checksum fail: \"%s*%s\"\n", value_str, star + 1);
+    return 0;
+  }
+
+  // STM32 reports speed * 10 as an ASCII integer; scale back.
+  float speed = atoi(value_str) / 10.0f;
 
   // Reject implausible values: negative or beyond the physical ceiling are
   // noise, not a real vehicle. Returning 0 keeps junk out of the run-trigger

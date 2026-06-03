@@ -55,20 +55,25 @@ STM32, polls it, and acts on the results.
 ## UART protocol (USART1, 1 Mbaud, 8N1)
 
 Strictly master-polled request/response. The ESP sends one ASCII byte; the STM32
-replies with one ASCII integer terminated by `\r\n`.
+replies with one **checksummed** ASCII line terminated by `\r\n`.
 
 | ESP sends | STM32 replies | Meaning |
 |-----------|---------------|---------|
-| `'m'` | `<int>\r\n` | Latest speed in **MPH × 10** |
-| `'k'` | `<int>\r\n` | Latest speed in **KPH × 10** |
+| `'m'` | `<int>*<CK>\r\n` | Latest speed in **MPH × 10**, checksummed |
+| `'k'` | `<int>*<CK>\r\n` | Latest speed in **KPH × 10**, checksummed |
 | `'a'` / `'s'` | (raw dump on/off) | Debug: stream raw ADC/FFT buffers (not used in normal operation) |
 | `'h'` / `'l'` | — | Debug: enable/disable low-frequency rejection |
+| `'d'` | — | Debug: toggle the per-frame `DBG …` diagnostic dump (emitted on **USART2**, not this link) |
 
-- The reported value is **speed × 10** (e.g. `374` → 37.4). The ESP divides by 10
-  in [`get_speed()`](esp32_firmware_platformio/src/radar.h). The STM32 derives this from
-  the FFT peak frequency using a CDM324 calibration constant (≈0.145 for MPH×10,
-  ≈0.226 for KPH×10) — see `analog_compute_fft_on_cplted_sequence()` /
-  the command handler in [STM32 `main.c`](stm32_firmware_platformio/Core/Src/main.c).
+- **Reply format:** `<int>*<CK>\r\n`, e.g. `298*33`. `<int>` is **speed × 10**
+  (so `298` → 29.8). `<CK>` is the **XOR of the value's ASCII digits**, printed as
+  two hex chars (`'2'^'9'^'8' = 0x33`). The ESP verifies the checksum in
+  [`get_speed()`](esp32_firmware_platformio/src/radar.h) and returns 0 on any mismatch.
+  This rejects the dangerous corruption the plausibility ceiling can't catch — a
+  flipped bit that lands on another in-range value (e.g. `29` → `79` mph). The
+  STM32 derives `<int>` from the FFT peak frequency using a CDM324 calibration
+  constant (≈0.145 for MPH×10, ≈0.226 for KPH×10) — see the command handler /
+  `uart_reply_speed()` in [STM32 `main.c`](stm32_firmware_platformio/Core/Src/main.c).
 
 ### Important timing/behavior contract
 
@@ -79,11 +84,17 @@ replies with one ASCII integer terminated by `\r\n`.
 - Because of this, the ESP's `get_speed()` waits up to **50 ms** for a reply and
   returns **0** (treated as "no motion") if nothing arrives — it never blocks the
   radar loop on a missing reply.
-- The ESP **drains stale RX bytes before each query** and **rejects implausible
-  readings** (negative, or above `MAX_PLAUSIBLE_SPEED = 250`) as line noise. RF
-  noise — often from the ESP's own WiFi bursts — can inject junk on the UART line;
-  this guard keeps it out of the trigger/upload path. (This hardening is specific
-  to the PlatformIO firmware; the original Arduino sketch lacked it.)
+- The ESP **drains stale RX bytes before each query**, **verifies the reply
+  checksum**, and **rejects implausible readings** (negative, or above
+  `MAX_PLAUSIBLE_SPEED = 250`) as line noise. RF noise — often from the ESP's own
+  WiFi bursts — can inject junk on the UART line; these guards keep it out of the
+  trigger/upload path. (This hardening is specific to the PlatformIO firmware; the
+  original Arduino sketch lacked it.)
+- On the STM32 side, command bytes are received **by interrupt into a ring buffer**
+  with a `HAL_UART_ErrorCallback` that clears overrun/framing errors and re-arms —
+  so a noise byte during the ~2.4 ms FFT can't overrun the FIFO-less USART and
+  permanently deafen the link. An **independent watchdog (IWDG, ~2 s)** resets the
+  MCU if the radar loop ever wedges. Neither affects the wire protocol.
 
 ## GPIO signaling
 
@@ -122,5 +133,9 @@ The ESP owns the STM32's reset. At boot it pulses `STM32_RESET_PIN` low for ~20 
 - **Change a command/units:** edit the STM32 command handler (`'m'`/`'k'` cases) and
   the ESP `get_speed()` together — the `× 10` scaling and unit semantics are a
   shared contract.
+- **Change the reply format / checksum:** the `<int>*<CK>\r\n` framing is a shared
+  contract — update `uart_reply_speed()` in STM32 `main.c` **and** the line-parse +
+  checksum verification in the ESP `get_speed()` together, or replies will be
+  rejected as corrupt.
 - **Change a pin:** update both the STM32 `.ioc`/`MX_GPIO_Init` (or USART pin
   remap) and the ESP `#define`s near the top of `main.cpp`.

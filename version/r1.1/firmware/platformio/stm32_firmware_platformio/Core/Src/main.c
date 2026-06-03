@@ -99,13 +99,23 @@ float32_t analog_rfft_output[1024];
 uint16_t analog_last_peak_indexes[32];
 uint16_t analog_cur_peak_fill_idx = 0;
 
-/* Per-frame diagnostics, dumped over USART1 when the 'd' command toggles them
- * on (lets us see why a frame was rejected without an external probe). */
+/* Per-frame diagnostics, dumped over USART2 (CH340 debug header) when enabled
+ * (lets us see why a frame was rejected without an external probe). */
 volatile uint16_t analog_dbg_peak_bin = 0;
 volatile uint32_t analog_dbg_peak_mag = 0;
 volatile uint32_t analog_dbg_floor_mean = 0;
 volatile uint16_t analog_dbg_bad_count = 0;
 volatile uint8_t analog_dbg_dropped = 0;
+
+/* USART1 (ESP32 link) interrupt-driven RX ring buffer. The ESP polls for speed
+ * with single command bytes; the F3 USART has no RX FIFO, so a stray noise byte
+ * arriving during the ~2.4ms FFT would overrun and (unhandled) stall reception.
+ * Taking bytes in by interrupt into this buffer makes command RX robust. */
+#define UART1_RX_BUF_SIZE 32u
+volatile uint8_t uart1_rx_buf[UART1_RX_BUF_SIZE];
+volatile uint16_t uart1_rx_head = 0; /* written by ISR */
+volatile uint16_t uart1_rx_tail = 0; /* read by main loop */
+volatile uint8_t uart1_rx_byte = 0;  /* landing byte for HAL_UART_Receive_IT */
 
 /* USER CODE END PV */
 
@@ -125,6 +135,7 @@ static void debug_dma_output_buffer(uint8_t *buffer, uint16_t size);
 //static void debug_printf(const char *fmt, ...);
 //static void debug_print_string(char* string);
 static char debug_get_char_from_uart(void);
+static void uart_reply_speed(uint16_t value);
 
 // Analog
 static uint16_t analog_compute_fft_on_cplted_sequence(BOOL remove_low_freqs);
@@ -211,11 +222,30 @@ int main(void) {
 	/* Trigger analog conversions */
 	analog_trigger_conversion();
 
+	/* Arm interrupt-driven reception of ESP32 command bytes on USART1. */
+	HAL_UART_Receive_IT(&huart1, (uint8_t*) &uart1_rx_byte, 1);
+
+	/* Start the independent watchdog (~2s). Started here, after the (possibly
+	 * slow) peripheral/FatFs init, so a long boot can't trip it; refreshed at
+	 * the top of the loop below. LSI ~40kHz / prescaler 64 = 625Hz, reload
+	 * 1250 -> ~2.0s. If the loop ever wedges (stuck UART TX, ADC stall) the MCU
+	 * resets itself instead of going deaf. Once started it cannot be stopped
+	 * except by reset; the bootloader doesn't run app code, so flashing is
+	 * unaffected. */
+	IWDG->KR = 0x5555;   /* enable write access to PR/RLR */
+	IWDG->PR = 0x04;     /* prescaler /64 */
+	IWDG->RLR = 1250;    /* reload value -> ~2.0s timeout */
+	IWDG->KR = 0xAAAA;   /* refresh */
+	IWDG->KR = 0xCCCC;   /* start the watchdog */
+
 	/* USER CODE END 2 */
 
 	/* Infinite loop */
 	/* USER CODE BEGIN WHILE */
 	while (1) {
+
+		/* Pet the watchdog every iteration (the loop spins fast when idle). */
+		IWDG->KR = 0xAAAA;
 
 		/* Sequence of ADC measurements complete? */
 		if (analog_get_and_clear_adc_measurement_done() != FALSE) {
@@ -287,9 +317,9 @@ int main(void) {
 			} else if (uart_input == 'l') {
 				remove_low_freqs = FALSE;
 			} else if (uart_input == 'k') {
-				printf("%d\r\n", (uint16_t) (last_fft_return * 0.2262295));
+				uart_reply_speed((uint16_t) (last_fft_return * 0.2262295));
 			} else if (uart_input == 'm') {
-				printf("%d\r\n", (uint16_t) (last_fft_return * 0.1449275));
+				uart_reply_speed((uint16_t) (last_fft_return * 0.1449275));
 			} else if (uart_input == 'd') {
 				/* Toggle the readable diagnostic dump (see above). */
 				diag_enabled = (diag_enabled == FALSE) ? TRUE : FALSE;
@@ -541,17 +571,65 @@ void debug_dma_output_buffer(uint8_t *buffer, uint16_t size) {
 }
 
 /*! \fn     debug_get_char_from_uart(void)
- *   \brief  Get debug char from UART
+ *   \brief  Pop one command byte from the interrupt-fed USART1 RX ring buffer
  *   \return	0 if nothing was received, otherwise the char
+ *   \note	The protocol only ever sends ASCII command bytes, never 0x00, so 0
+ *   		is unambiguous as "empty". Single-producer (ISR) / single-consumer
+ *   		(main) ring, so no critical section is needed.
  */
 char debug_get_char_from_uart(void) {
-	char temp_char = 0;
+	if (uart1_rx_tail == uart1_rx_head) {
+		return 0; /* buffer empty */
+	}
+	char c = (char) uart1_rx_buf[uart1_rx_tail];
+	uart1_rx_tail = (uint16_t) ((uart1_rx_tail + 1u) % UART1_RX_BUF_SIZE);
+	return c;
+}
 
-	if ((__HAL_UART_GET_FLAG(&huart1, UART_FLAG_RXNE) ? SET : RESET) == SET) {
-		HAL_UART_Receive(&huart1, (uint8_t*) &temp_char, sizeof(temp_char), 1);
-		return temp_char;
-	} else {
-		return 0;
+/*! \fn     uart_reply_speed(uint16_t value)
+ *   \brief  Reply to an ESP32 speed query as "<value>*<CK>\r\n"
+ *   \param	value	speed in (MPH or KPH) x10
+ *   \note	CK is the XOR of the value's ASCII digits, printed as 2 hex chars,
+ *   		e.g. 298 -> "298*33\r\n". Lets the ESP reject UART corruption that
+ *   		would otherwise stay in-range and slip past its plausibility check
+ *   		(a real risk on this electrically noisy board). Stays human-readable
+ *   		in the debug monitor.
+ */
+void uart_reply_speed(uint16_t value) {
+	char num[8];
+	int n = snprintf(num, sizeof(num), "%u", (unsigned) value);
+	uint8_t ck = 0;
+	for (int i = 0; i < n; i++) {
+		ck ^= (uint8_t) num[i];
+	}
+	printf("%s*%02X\r\n", num, ck);
+}
+
+/*! \fn     HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+ *   \brief  USART1 RX-complete ISR: stash the byte and re-arm reception
+ */
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+	if (huart->Instance == USART1) {
+		uint16_t next = (uint16_t) ((uart1_rx_head + 1u) % UART1_RX_BUF_SIZE);
+		if (next != uart1_rx_tail) { /* drop the byte if the ring is full */
+			uart1_rx_buf[uart1_rx_head] = uart1_rx_byte;
+			uart1_rx_head = next;
+		}
+		HAL_UART_Receive_IT(huart, (uint8_t*) &uart1_rx_byte, 1);
+	}
+}
+
+/*! \fn     HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+ *   \brief  Clear USART1 errors (overrun/framing/noise from line noise) and
+ *           re-arm RX so a single bad byte can't permanently deafen the link.
+ */
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
+	if (huart->Instance == USART1) {
+		__HAL_UART_CLEAR_OREFLAG(huart);
+		__HAL_UART_CLEAR_FEFLAG(huart);
+		__HAL_UART_CLEAR_NEFLAG(huart);
+		__HAL_UART_CLEAR_PEFLAG(huart);
+		HAL_UART_Receive_IT(huart, (uint8_t*) &uart1_rx_byte, 1);
 	}
 }
 
@@ -833,6 +911,14 @@ uint16_t analog_compute_fft_on_cplted_sequence(BOOL remove_low_freqs) {
  */
 void Error_Handler(void) {
 	/* USER CODE BEGIN Error_Handler_Debug */
+	/* Previously this was empty, so a failed HAL init silently fell through and
+	 * ran with half-initialised peripherals. Instead, stop with interrupts off:
+	 * if the watchdog is already running the MCU resets and retries; if the
+	 * failure happened during early init (before the IWDG starts) it halts
+	 * visibly (no boot banner / no replies) rather than emitting garbage. */
+	__disable_irq();
+	while (1) {
+	}
 	/* USER CODE END Error_Handler_Debug */
 }
 #ifdef USE_FULL_ASSERT

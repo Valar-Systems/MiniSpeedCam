@@ -189,7 +189,11 @@ void HAL_UART_MspInit(UART_HandleTypeDef* huart)
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
     /* USER CODE BEGIN USART1_MspInit 1 */
-
+    /* Enable the USART1 interrupt for IT-driven RX of ESP32 commands. Priority
+     * 5 keeps it below the ADC DMA (priority 0) so radar sampling is never
+     * delayed by command reception. */
+    HAL_NVIC_SetPriority(USART1_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(USART1_IRQn);
     /* USER CODE END USART1_MspInit 1 */
   }
   else if(huart->Instance==USART2)
