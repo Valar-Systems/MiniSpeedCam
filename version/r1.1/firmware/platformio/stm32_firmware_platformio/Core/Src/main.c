@@ -53,6 +53,19 @@
  * above them. remove_low_freqs raises this further to ~10 (a min-speed gate). */
 #define ANALOG_MIN_BIN          3
 
+/* Detection debounce: the minimum number of *valid* (non-zero) detections that
+ * must be present in the 32-frame rolling window before a non-zero speed is
+ * emitted. The median deliberately ignores no-target zeros (so a brief real
+ * pass isn't swallowed -- see analog_buffer_median), but that alone lets a
+ * SINGLE false detection latch the output for the whole ~0.9s window: e.g. one
+ * transient harmonic off a vibrating / rattling reflector that momentarily
+ * clears the SNR gate. Requiring several detections first rejects such
+ * isolated / transient spikes while still catching a real target, which dwells
+ * in the beam for many ~29ms frames and fills the window easily. Raise toward
+ * the window size (32) for more aggressive vibration rejection; lower it to
+ * catch very brief passes. */
+#define ANALOG_MIN_VALID_DETECTIONS 5
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -633,7 +646,7 @@ void analog_output_current_fft_to_uart(uint16_t nb_bins) {
 
 /*! \fn     analog_buffer_median(void)
  *   \brief  Median of the *valid* (non-zero) detections in the rolling buffer
- *   \return	Median bin index, or 0 if there are no detections in the window
+ *   \return	Median bin index of the valid detections, or 0 if fewer than ANALOG_MIN_VALID_DETECTIONS are present (debounce)
  *   \note	Zeros are "no target this frame" markers and MUST be excluded: like
  *   		the original mean, a brief pass occupies only a minority of the
  *   		~0.9s window, so including zeros would median to 0 and swallow it.
@@ -653,8 +666,13 @@ uint16_t analog_buffer_median(void) {
 		}
 	}
 
-	if (cnt == 0) {
-		return 0; /* no detections in the window */
+	/* Debounce: require a minimum number of valid detections before emitting a
+	 * speed. Without this, a single false detection (the only non-zero sample
+	 * among no-target zeros) would dominate the median and latch the output for
+	 * the full ~0.9s window -- exactly how a transient harmonic off a vibrating
+	 * reflector reads as a steady, wrong speed. */
+	if (cnt < ANALOG_MIN_VALID_DETECTIONS) {
+		return 0; /* no target, or an isolated transient spike: hold at zero */
 	}
 
 	for (uint16_t i = 1; i < cnt; i++) {
