@@ -93,6 +93,10 @@ void connectWifiAP() {
 
     if (!MDNS.begin(deviceHostname())) {
       Serial.println("Error setting up MDNS responder!");
+    } else {
+      // Log the per-device mDNS address so it's discoverable from serial (the
+      // STA path otherwise prints only the IP); two units differ by MAC suffix.
+      Serial.printf("[WIFI] mDNS: http://%s.local/\n", deviceHostname());
     }
 
   } else {
