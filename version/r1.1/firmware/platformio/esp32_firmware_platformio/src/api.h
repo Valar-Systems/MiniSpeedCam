@@ -21,7 +21,26 @@
 
 #include "config.h"
 
-#define HOSTNAME "MiniSpeedCam"  // mDNS name and Soft-AP SSID
+#define HOSTNAME "MiniSpeedCam"  // base name; deviceHostname() appends a per-unit MAC suffix
+
+/**
+ * Per-device network name: HOSTNAME plus the last 3 bytes of the factory MAC,
+ * e.g. "MiniSpeedCam-3CAB1F". Used for the mDNS name, the STA hostname and the
+ * soft-AP SSID so two MiniSpeedCams can share one network without colliding -- a
+ * fixed name makes both claim "MiniSpeedCam.local" and mDNS renames one. The
+ * efuse MAC is read once and cached and needs no WiFi to be up. Only the low 3
+ * bytes (the NIC-specific half) are used: the high 3 are Espressif's OUI,
+ * identical on every ESP32, so they can't tell units apart.
+ */
+static const char* deviceHostname() {
+  static char name[24] = {0};
+  if (name[0] == '\0') {
+    uint64_t mac = ESP.getEfuseMac();  // 48-bit factory MAC, byte 0 in the LSB
+    snprintf(name, sizeof(name), "%s-%02X%02X%02X", HOSTNAME,
+             (uint8_t)(mac >> 24), (uint8_t)(mac >> 32), (uint8_t)(mac >> 40));
+  }
+  return name;
+}
 
 // WiFi transmit power. The default (~19.5dBm) maximises range but the TX
 // current spikes / RF energy couple into the CDM324 radar front-end and
@@ -54,7 +73,7 @@ static void applyTlsPolicy(WiFiClientSecure& client) {
 void connectWifiAP() {
   int connect_timeout;
 
-  WiFi.setHostname(HOSTNAME);
+  WiFi.setHostname(deviceHostname());
   Serial.println("Connecting WiFi/AP");
   //Try to connect with stored credentials, fire up an access point if they don't work.
   WiFi.mode(WIFI_STA);
@@ -72,7 +91,7 @@ void connectWifiAP() {
     Serial.println(WiFi.localIP());
     Serial.println("Wifi started");
 
-    if (!MDNS.begin(HOSTNAME)) {
+    if (!MDNS.begin(deviceHostname())) {
       Serial.println("Error setting up MDNS responder!");
     }
 
@@ -95,7 +114,7 @@ void connectWifiAP() {
     // times rather than booting with no portal and no indication why.
     bool ap_up = false;
     for (int attempt = 1; attempt <= 3 && !ap_up; attempt++) {
-      ap_up = WiFi.softAP(HOSTNAME);  // open AP (no password) named HOSTNAME
+      ap_up = WiFi.softAP(deviceHostname());  // open AP (no password) named after the device
       if (!ap_up) {
         Serial.printf("[AP] softAP() failed, retry %d/3\n", attempt);
         delay(500);
@@ -103,7 +122,7 @@ void connectWifiAP() {
     }
 
     if (ap_up) {
-      Serial.printf("[AP] up: SSID=\"%s\" ip=%s\n", HOSTNAME, WiFi.softAPIP().toString().c_str());
+      Serial.printf("[AP] up: SSID=\"%s\" ip=%s\n", deviceHostname(), WiFi.softAPIP().toString().c_str());
     } else {
       Serial.println("[AP] FAILED to start access point");
     }
@@ -138,7 +157,7 @@ void connectWifi() {
   WiFi.mode(WIFI_STA);
   WiFi.setTxPower(WIFI_TX_POWER);  // reduce EMI into the radar front-end
   WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE, INADDR_NONE);
-  WiFi.setHostname(HOSTNAME);  // match connectWifiAP()/mDNS so the station hostname stays "MiniSpeedCam" across reconnects
+  WiFi.setHostname(deviceHostname());  // match connectWifiAP()/mDNS so the station hostname stays consistent across reconnects
 
   // try to connect to existing network
   Serial.println("\n\nTry to connect to existing network");
