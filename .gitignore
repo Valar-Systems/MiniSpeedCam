@@ -1,0 +1,14 @@
+# --- KiCad -----------------------------------------------------------------
+# Auto-backup archives + lock/cache/temp files KiCad regenerates on its own.
+*-backups/
+*.lck
+*-bak
+fp-info-cache
+_autosave-*
+*.tmp
+
+# --- Editor "Local History" (VS Code Local History extension, etc.) --------
+.history/
+
+# --- PlatformIO build output ----------------------------------------------
+.pio/

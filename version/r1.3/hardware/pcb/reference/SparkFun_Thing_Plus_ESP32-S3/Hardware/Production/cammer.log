@@ -1,0 +1,30 @@
+2024-01-23 14:15:20,397 - cammer_logger - INFO - Running CAMmer
+2024-01-23 14:15:20,397 - cammer_logger - INFO - ['-l', 'F.Cu,In1.Cu,In2.Cu,B.Cu,F.Paste,B.Paste,F.Silkscreen,B.Silkscreen,F.Mask,B.Mask', '-e', 'Edge.Cuts,User.Comments']
+2024-01-23 14:15:20,398 - cammer_logger - INFO - CAMMER START: 2024-01-23T14:15:20.398252
+2024-01-23 14:15:22,489 - cammer_logger - INFO - 
+START: 2024-01-23T14:15:20.398252
+Deleting existing C:\Users\nathan.seidle\Dropbox\Projects\SparkFun_Thing_Plus_ESP32-S3\Hardware\Production\SparkFun_Thing_Plus_ESP32-S3_panelized.GTL
+Renaming C:\Users\nathan.seidle\Dropbox\Projects\SparkFun_Thing_Plus_ESP32-S3\Hardware\Production\SparkFun_Thing_Plus_ESP32-S3_panelized-F_Cu.gbr to C:\Users\nathan.seidle\Dropbox\Projects\SparkFun_Thing_Plus_ESP32-S3\Hardware\Production\SparkFun_Thing_Plus_ESP32-S3_panelized.GTL
+Deleting existing C:\Users\nathan.seidle\Dropbox\Projects\SparkFun_Thing_Plus_ESP32-S3\Hardware\Production\SparkFun_Thing_Plus_ESP32-S3_panelized.GL1
+Renaming C:\Users\nathan.seidle\Dropbox\Projects\SparkFun_Thing_Plus_ESP32-S3\Hardware\Production\SparkFun_Thing_Plus_ESP32-S3_panelized-In1_Cu.gbr to C:\Users\nathan.seidle\Dropbox\Projects\SparkFun_Thing_Plus_ESP32-S3\Hardware\Production\SparkFun_Thing_Plus_ESP32-S3_panelized.GL1
+Deleting existing C:\Users\nathan.seidle\Dropbox\Projects\SparkFun_Thing_Plus_ESP32-S3\Hardware\Production\SparkFun_Thing_Plus_ESP32-S3_panelized.GL2
+Renaming C:\Users\nathan.seidle\Dropbox\Projects\SparkFun_Thing_Plus_ESP32-S3\Hardware\Production\SparkFun_Thing_Plus_ESP32-S3_panelized-In2_Cu.gbr to C:\Users\nathan.seidle\Dropbox\Projects\SparkFun_Thing_Plus_ESP32-S3\Hardware\Production\SparkFun_Thing_Plus_ESP32-S3_panelized.GL2
+Deleting existing C:\Users\nathan.seidle\Dropbox\Projects\SparkFun_Thing_Plus_ESP32-S3\Hardware\Production\SparkFun_Thing_Plus_ESP32-S3_panelized.GBL
+Renaming C:\Users\nathan.seidle\Dropbox\Projects\SparkFun_Thing_Plus_ESP32-S3\Hardware\Production\SparkFun_Thing_Plus_ESP32-S3_panelized-B_Cu.gbr to C:\Users\nathan.seidle\Dropbox\Projects\SparkFun_Thing_Plus_ESP32-S3\Hardware\Production\SparkFun_Thing_Plus_ESP32-S3_panelized.GBL
+Deleting existing C:\Users\nathan.seidle\Dropbox\Projects\SparkFun_Thing_Plus_ESP32-S3\Hardware\Production\SparkFun_Thing_Plus_ESP32-S3_panelized.GTP
+Renaming C:\Users\nathan.seidle\Dropbox\Projects\SparkFun_Thing_Plus_ESP32-S3\Hardware\Production\SparkFun_Thing_Plus_ESP32-S3_panelized-F_Paste.gbr to C:\Users\nathan.seidle\Dropbox\Projects\SparkFun_Thing_Plus_ESP32-S3\Hardware\Production\SparkFun_Thing_Plus_ESP32-S3_panelized.GTP
+Deleting existing C:\Users\nathan.seidle\Dropbox\Projects\SparkFun_Thing_Plus_ESP32-S3\Hardware\Production\SparkFun_Thing_Plus_ESP32-S3_panelized.GBP
+Renaming C:\Users\nathan.seidle\Dropbox\Projects\SparkFun_Thing_Plus_ESP32-S3\Hardware\Production\SparkFun_Thing_Plus_ESP32-S3_panelized-B_Paste.gbr to C:\Users\nathan.seidle\Dropbox\Projects\SparkFun_Thing_Plus_ESP32-S3\Hardware\Production\SparkFun_Thing_Plus_ESP32-S3_panelized.GBP
+Deleting existing C:\Users\nathan.seidle\Dropbox\Projects\SparkFun_Thing_Plus_ESP32-S3\Hardware\Production\SparkFun_Thing_Plus_ESP32-S3_panelized.GTO
+Renaming C:\Users\nathan.seidle\Dropbox\Projects\SparkFun_Thing_Plus_ESP32-S3\Hardware\Production\SparkFun_Thing_Plus_ESP32-S3_panelized-F_Silkscreen.gbr to C:\Users\nathan.seidle\Dropbox\Projects\SparkFun_Thing_Plus_ESP32-S3\Hardware\Production\SparkFun_Thing_Plus_ESP32-S3_panelized.GTO
+Deleting existing C:\Users\nathan.seidle\Dropbox\Projects\SparkFun_Thing_Plus_ESP32-S3\Hardware\Production\SparkFun_Thing_Plus_ESP32-S3_panelized.GBO
+Renaming C:\Users\nathan.seidle\Dropbox\Projects\SparkFun_Thing_Plus_ESP32-S3\Hardware\Production\SparkFun_Thing_Plus_ESP32-S3_panelized-B_Silkscreen.gbr to C:\Users\nathan.seidle\Dropbox\Projects\SparkFun_Thing_Plus_ESP32-S3\Hardware\Production\SparkFun_Thing_Plus_ESP32-S3_panelized.GBO
+Deleting existing C:\Users\nathan.seidle\Dropbox\Projects\SparkFun_Thing_Plus_ESP32-S3\Hardware\Production\SparkFun_Thing_Plus_ESP32-S3_panelized.GTS
+Renaming C:\Users\nathan.seidle\Dropbox\Projects\SparkFun_Thing_Plus_ESP32-S3\Hardware\Production\SparkFun_Thing_Plus_ESP32-S3_panelized-F_Mask.gbr to C:\Users\nathan.seidle\Dropbox\Projects\SparkFun_Thing_Plus_ESP32-S3\Hardware\Production\SparkFun_Thing_Plus_ESP32-S3_panelized.GTS
+Deleting existing C:\Users\nathan.seidle\Dropbox\Projects\SparkFun_Thing_Plus_ESP32-S3\Hardware\Production\SparkFun_Thing_Plus_ESP32-S3_panelized.GBS
+Renaming C:\Users\nathan.seidle\Dropbox\Projects\SparkFun_Thing_Plus_ESP32-S3\Hardware\Production\SparkFun_Thing_Plus_ESP32-S3_panelized-B_Mask.gbr to C:\Users\nathan.seidle\Dropbox\Projects\SparkFun_Thing_Plus_ESP32-S3\Hardware\Production\SparkFun_Thing_Plus_ESP32-S3_panelized.GBS
+Deleting existing C:\Users\nathan.seidle\Dropbox\Projects\SparkFun_Thing_Plus_ESP32-S3\Hardware\Production\SparkFun_Thing_Plus_ESP32-S3_panelized.GKO
+Renaming C:\Users\nathan.seidle\Dropbox\Projects\SparkFun_Thing_Plus_ESP32-S3\Hardware\Production\SparkFun_Thing_Plus_ESP32-S3_panelized-Edge_Cuts.gbr to C:\Users\nathan.seidle\Dropbox\Projects\SparkFun_Thing_Plus_ESP32-S3\Hardware\Production\SparkFun_Thing_Plus_ESP32-S3_panelized.GKO
+Drill report: C:\Users\nathan.seidle\Dropbox\Projects\SparkFun_Thing_Plus_ESP32-S3\Hardware\Production\drill_report.rpt
+
+2024-01-23 14:15:22,635 - cammer_logger - INFO - CAMmer complete

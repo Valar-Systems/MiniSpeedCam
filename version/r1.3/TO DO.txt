@@ -1,0 +1,4 @@
+Hardware to add:
+
+Connect ESP32 GPIO to STM32 BOOT0 pin.
+    This allows ESP32 to place the STM into BOOT mode
