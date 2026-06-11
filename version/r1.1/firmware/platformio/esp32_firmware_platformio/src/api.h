@@ -96,16 +96,24 @@ void connectWifiAP() {
 
   WiFi.setHostname(deviceHostname());
   Serial.println("Connecting WiFi/AP");
-  //Try to connect with stored credentials, fire up an access point if they don't work.
-  WiFi.mode(WIFI_STA);
-  WiFi.setTxPower(WIFI_TX_POWER);  // reduce EMI into the radar front-end
-  WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE, INADDR_NONE);
-  WiFi.begin(ssid, password);
-  connect_timeout = 28;  //7 seconds
-  while (WiFi.status() != WL_CONNECTED && connect_timeout > 0) {
-    delay(250);
-    Serial.print(".");
-    connect_timeout--;
+  // Skip the STA attempt entirely when there are no stored credentials (a fresh
+  // device, or one just WiFi-reset to "NOT_SET"): trying to join a non-existent
+  // network only burns ~7s before falling back to the AP. Go straight to config.
+  bool have_creds = (ssid != "NOT_SET" && !ssid.isEmpty());
+  if (have_creds) {
+    //Try to connect with stored credentials, fire up an access point if they don't work.
+    WiFi.mode(WIFI_STA);
+    WiFi.setTxPower(WIFI_TX_POWER);  // reduce EMI into the radar front-end
+    WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE, INADDR_NONE);
+    WiFi.begin(ssid, password);
+    connect_timeout = 28;  //7 seconds
+    while (WiFi.status() != WL_CONNECTED && connect_timeout > 0) {
+      delay(250);
+      Serial.print(".");
+      connect_timeout--;
+    }
+  } else {
+    Serial.println("No stored credentials -> starting config AP directly");
   }
 
   if (WiFi.status() == WL_CONNECTED) {
@@ -243,13 +251,23 @@ void wifiResetButton() {
     unsigned long now = millis();
     if (pressStart == 0) {
       pressStart = now ? now : 1;  // start timing; avoid 0 (the "not pressed" sentinel) on the millis() rollover tick
+      Serial.println("[RESET] button DOWN on GPIO21 (hold 3s to clear WiFi creds)");
     } else if (now - pressStart >= WIFI_RESET_HOLD_MS) {
       Serial.println("Reset button held 3s. Resetting Wi-Fi...");
-      preferences.putString("ssid", "ssid");  // This replaces the stored wifi network with a random value
-      preferences.putString("pass", "pass");  // This replaces the stored wifi network with a random value
+      // Restore the unconfigured sentinel "NOT_SET" (NOT the literal "ssid"/"pass":
+      // those look like real credentials, so taskCore1 keeps requesting reconnects
+      // and connectWifi() tears the soft-AP back down to retry a bogus network,
+      // looping forever). connectWifi() and the taskCore1 reconnect guard both bail
+      // on "NOT_SET", so the device stays cleanly in AP mode for reconfiguration.
+      preferences.putString("ssid", "NOT_SET");
+      preferences.putString("pass", "NOT_SET");
       ESP.restart();
     }
   } else {
+    if (pressStart != 0) {
+      Serial.printf("[RESET] button UP after %lums (need >=3000 to reset)\n",
+                    (unsigned long) (millis() - pressStart));
+    }
     pressStart = 0;  // released before the threshold; reset so taps don't accumulate
   }
 }
