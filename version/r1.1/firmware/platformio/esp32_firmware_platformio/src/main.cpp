@@ -57,6 +57,7 @@ Preferences preferences;  // NVS-backed key/value store for WiFi creds and user 
 #include "variables.h"
 #include "diagnostics.h"
 #include "camera.h"
+#include "camera_stream.h"
 #include "radar.h"
 #include "api.h"
 #include "espui_settings.h"
@@ -69,6 +70,19 @@ TaskHandle_t Task1;  // Handle for the Core 1 task (radar polling / sleep / DNS)
 // Forward declarations for the dual-core task functions (defined below).
 void taskCore0(void* parameter);
 void taskCore1(void* parameter);
+
+// --- Aiming-stream <-> ESPUI bridge -----------------------------------------
+// The MJPEG stream server lives in its own translation unit (camera_stream.cpp)
+// because esp_http_server and ESPUI's ESPAsyncWebServer can't share a file
+// (clashing HTTP_* enums). It reports start/stop through these callbacks so the
+// ESPUI label/switcher (an ESPUI concern, kept here) stay in sync.
+static void onStreamStarted(const char* url) {
+  ESPUI.updateLabel(labelStream, String(url));
+}
+static void onStreamStopped() {
+  ESPUI.updateLabel(labelStream, "off");
+  ESPUI.updateSwitcher(aimingSwitchId, false);  // reflect auto-off in the web UI
+}
 
 /**
  * Arduino setup() - runs once on boot/reset.
@@ -151,6 +165,10 @@ void setup() {
   // Load ESPUI elements
   load_espui();
 
+  // Wire the stream module's start/stop notifications to the ESPUI UI now that
+  // the controls (labelStream / aimingSwitchId) exist.
+  streamSetCallbacks(onStreamStarted, onStreamStopped);
+
   // Send local IP address to API if connected to internet
   sendLocalIP();
 
@@ -229,6 +247,8 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
 
     dnsServer.processNextRequest();  // Process request for ESPUI
 
+    streamService();  // start/stop the aiming MJPEG stream + enforce its auto-off timeout
+
     if (ignore_flag == true) {
       if (millis() >= ignore_time) {
         ignore_flag = false;  // Only if 5 seconds passed
@@ -259,7 +279,7 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
 
     // Never power down WiFi while unconfigured: the soft-AP must stay up so
     // the user can open the portal and enter credentials (ssid == "NOT_SET").
-    if (power_saver && ssid != "NOT_SET" && wake_flag == true) {
+    if (power_saver && !stream_active && ssid != "NOT_SET" && wake_flag == true) {
       if (millis() >= sleep_time) {              // Only if 120 seconds passed
         if (digitalRead(ESP_WAKEUP_PIN) == 0) {  // Only if STM not measuring data
           wake_flag = false;
@@ -280,7 +300,7 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
     /* SLEEP - 5 seconds of no activity on radar (Power-Saver Mode only) */
     unsigned long currentMillis = millis();
 
-    if (power_saver && ssid != "NOT_SET" && wake_flag == false) {
+    if (power_saver && !stream_active && ssid != "NOT_SET" && wake_flag == false) {
       if (speed == 0) {  // Check if speed is 0
         if (currentMillis - previousMillis >= interval) {
           previousMillis = currentMillis;      // Save the last time
@@ -312,7 +332,9 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
 
     }
 
-    if (ignore_flag == false) {
+    // Pause speed tracking while the aiming stream is up: the device is being
+    // mounted (not measuring), and the stream task owns the camera framebuffer.
+    if (ignore_flag == false && !stream_active) {
       // Debounce: count consecutive over-threshold readings; a single glitch
       // resets the count, so it can never reach SPEED_CONFIRM_COUNT.
       static int speedConfirmCount = 0;
