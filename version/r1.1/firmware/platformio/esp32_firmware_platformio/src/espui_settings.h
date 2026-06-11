@@ -59,6 +59,27 @@ void powerSaverCall(Control* sender, int value) {
 }
 
 /**
+ * Toggle the aiming video stream (a temporary setup/mounting aid).
+ *
+ * S_ACTIVE requests a time-limited MJPEG stream (auto-stops after
+ * STREAM_TIMEOUT_MS); S_INACTIVE stops it. Only sets the desired-state flags
+ * here — taskCore1's streamService() performs the actual camera/server work
+ * and updates the URL label, so all of that stays on one task.
+ */
+void aimingStreamCall(Control* sender, int value) {
+  switch (value) {
+    case S_ACTIVE:
+      stream_deadline = millis() + STREAM_TIMEOUT_MS;
+      stream_active = true;
+      break;
+    case S_INACTIVE:
+      stream_active = false;
+      break;
+  }
+  Serial.printf("[STREAM] requested %s\n", stream_active ? "ON" : "OFF");
+}
+
+/**
  * Persist the minimum speed at which a tracking run begins.
  * Below this value, samples are ignored entirely.
  */
@@ -156,6 +177,7 @@ static uint16_t status_boot_count_label = 0;
  *   - Power-Saver Mode switcher (drop WiFi when idle vs. never sleep)
  *   - Minimum speed (run threshold)
  *   - Photo speed (capture threshold)
+ *   - Aiming Stream switcher + URL label (temporary MJPEG video for mounting)
  *
  * Tab 2 ("Wifi Settings"):
  *   - Clear Settings button
@@ -178,6 +200,10 @@ void load_espui(void) {
   ESPUI.addControl(ControlType::Switcher, "Power-Saver Mode (drop WiFi when idle):", String(power_saver), ControlColor::Alizarin, tab1, &powerSaverCall);
   ESPUI.addControl(ControlType::Number, "Minimum Speed:", String(min_speed), ControlColor::Alizarin, tab1, &minSpeedCall);
   ESPUI.addControl(ControlType::Number, "Photo Speed:", String(photo_speed), ControlColor::Alizarin, tab1, &photoSpeedCall);
+
+  //tab1: Aiming video stream (temporary setup aid; auto-stops after 5 min)
+  aimingSwitchId = ESPUI.addControl(ControlType::Switcher, "Aiming Stream (video, 5 min):", "0", ControlColor::Sunflower, tab1, &aimingStreamCall);
+  labelStream = ESPUI.addControl(ControlType::Label, "Stream URL", "off", ControlColor::Sunflower, tab1);
 
   //tab2: WiFi
   ESPUI.addControl(ControlType::Separator, "Wifi Status", "", ControlColor::None, tab2);

@@ -40,6 +40,8 @@
 #include "soc/rtc_cntl_reg.h"  // Disable brownout problems
 #include "driver/rtc_io.h"
 #include "SPIFFS.h"
+#include "esp_core_dump.h"     // read the previous crash's saved backtrace on boot
+#include "esp_system.h"        // esp_reset_reason()
 
 // --- GPIO assignments (board revision 1.1) ---
 #define STM32_RESET_PIN GPIO_NUM_47  // Drives STM32 NRST low to reset the radar MCU
@@ -57,6 +59,7 @@ Preferences preferences;  // NVS-backed key/value store for WiFi creds and user 
 #include "variables.h"
 #include "diagnostics.h"
 #include "camera.h"
+#include "camera_stream.h"
 #include "radar.h"
 #include "api.h"
 #include "espui_settings.h"
@@ -69,6 +72,54 @@ TaskHandle_t Task1;  // Handle for the Core 1 task (radar polling / sleep / DNS)
 // Forward declarations for the dual-core task functions (defined below).
 void taskCore0(void* parameter);
 void taskCore1(void* parameter);
+
+// --- Aiming-stream <-> ESPUI bridge -----------------------------------------
+// The MJPEG stream server lives in its own translation unit (camera_stream.cpp)
+// because esp_http_server and ESPUI's ESPAsyncWebServer can't share a file
+// (clashing HTTP_* enums). It reports start/stop through these callbacks so the
+// ESPUI label/switcher (an ESPUI concern, kept here) stay in sync.
+static void onStreamStarted(const char* url) {
+  ESPUI.updateLabel(labelStream, String(url));
+}
+static void onStreamStopped() {
+  ESPUI.updateLabel(labelStream, "off");
+  ESPUI.updateSwitcher(aimingSwitchId, false);  // reflect auto-off in the web UI
+}
+
+// --- Crash diagnostics ------------------------------------------------------
+// The panic handler saves a core dump to the flash 'coredump' partition on every
+// crash, but the native USB-CDC console drops off during the crash so the live
+// panic is never seen. Print the saved dump once on the next boot (USB-CDC is
+// back by then), then erase it. Decode the printed addresses with:
+//   xtensa-esp32s3-elf-addr2line -pfiaC -e .pio/build/esp32-s3/firmware.elf <addr ...>
+static void reportLastCrash() {
+  if (esp_core_dump_image_check() != ESP_OK) {
+    return;  // no valid core dump in flash -> last boot was clean
+  }
+  Serial.println("!!! ===== PREVIOUS CRASH: core dump found in flash ===== !!!");
+#if CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH && CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF
+  char reason[200];
+  if (esp_core_dump_get_panic_reason(reason, sizeof(reason)) == ESP_OK) {
+    Serial.printf("  reason   : %s\n", reason);
+  }
+  esp_core_dump_summary_t* s = (esp_core_dump_summary_t*) malloc(sizeof(*s));
+  if (s != nullptr && esp_core_dump_get_summary(s) == ESP_OK) {
+    Serial.printf("  task     : %s\n", s->exc_task);
+    Serial.printf("  PC       : 0x%08x  (exccause %u, fault addr 0x%08x)\n",
+                  (unsigned)s->exc_pc, (unsigned)s->ex_info.exc_cause,
+                  (unsigned)s->ex_info.exc_vaddr);
+    Serial.print("  backtrace:");
+    for (uint32_t i = 0; i < s->exc_bt_info.depth; i++) {
+      Serial.printf(" 0x%08x", (unsigned)s->exc_bt_info.bt[i]);
+    }
+    Serial.println(s->exc_bt_info.corrupted ? "  (stack corrupted)" : "");
+  }
+  free(s);
+#endif
+  Serial.println("  decode   : xtensa-esp32s3-elf-addr2line -pfiaC -e .pio/build/esp32-s3/firmware.elf <PC + backtrace>");
+  esp_core_dump_image_erase();  // clear so it prints once per crash, not every boot
+  Serial.println("!!! ==================================================== !!!");
+}
 
 /**
  * Arduino setup() - runs once on boot/reset.
@@ -151,6 +202,10 @@ void setup() {
   // Load ESPUI elements
   load_espui();
 
+  // Wire the stream module's start/stop notifications to the ESPUI UI now that
+  // the controls (labelStream / aimingSwitchId) exist.
+  streamSetCallbacks(onStreamStarted, onStreamStopped);
+
   // Send local IP address to API if connected to internet
   sendLocalIP();
 
@@ -166,6 +221,15 @@ void setup() {
   // lets a second event arrive while one is still uploading; deeper backlogs
   // are dropped (with a log) in taskCore1.
   uploadQueue = xQueueCreate(2, sizeof(UploadRequest));
+
+  // Crash diagnostics are printed HERE, near the end of setup, on purpose: on
+  // native USB-CDC the host monitor only reattaches a few seconds into boot, so
+  // anything printed at the very top is missed. By now it's reliably connected.
+  // This reveals why the previous boot ended -- BROWNOUT (5V rail dip, leaves no
+  // core dump) vs PANIC/TASK_WDT (code fault, with a backtrace) vs a clean reset.
+  esp_reset_reason_t last_reset = esp_reset_reason();
+  Serial.printf("[DIAG] last reset: %s (code %d)\n", resetReasonStr(last_reset), (int)last_reset);
+  reportLastCrash();
 
   Serial.printf("[BOOT] setup complete (heap=%u); starting tasks\n", (unsigned)ESP.getFreeHeap());
 
@@ -229,6 +293,17 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
 
     dnsServer.processNextRequest();  // Process request for ESPUI
 
+    streamService();  // start/stop the aiming MJPEG stream + enforce its auto-off timeout
+
+    // While the aiming stream is up, skip all measurement work below: the radar
+    // reads are meaningless (and WiFi-TX-corrupted) during aiming, and keeping
+    // taskCore1 quiet here frees the radio/CPU for a smooth stream. The short
+    // yield replaces get_speed()'s usual loop pacing so we don't busy-spin.
+    if (stream_active) {
+      vTaskDelay(pdMS_TO_TICKS(20));
+      continue;
+    }
+
     if (ignore_flag == true) {
       if (millis() >= ignore_time) {
         ignore_flag = false;  // Only if 5 seconds passed
@@ -241,8 +316,15 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
       speed = get_speed(false);  // Get speed (MPH) from STM32 via UART
     }
 
-    updateSpeedDisplay();   // push the live reading to the ESPUI "Current Speed" label
-    updateStatusDisplay();  // refresh the ESPUI Status tab (~1 Hz, self-throttled)
+    // While the aiming stream runs, DON'T push ESPUI label updates: each one is
+    // a WebSocket broadcast over AsyncTCP (:80), and under the stream's WiFi/LWIP
+    // saturation that send blocks -- hanging this whole task (the ~30s freeze:
+    // radar, serial, stream AND ESPUI all stop until TCP times out). The live
+    // labels aren't needed while aiming; they resume when the stream stops.
+    if (!stream_active) {
+      updateSpeedDisplay();   // push the live reading to the ESPUI "Current Speed" label
+      updateStatusDisplay();  // refresh the ESPUI Status tab (~1 Hz, self-throttled)
+    }
 
     // Echo the live speed to the serial monitor, throttled to ~1 Hz so the
     // fast radar-poll loop doesn't flood the console.
@@ -259,7 +341,7 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
 
     // Never power down WiFi while unconfigured: the soft-AP must stay up so
     // the user can open the portal and enter credentials (ssid == "NOT_SET").
-    if (power_saver && ssid != "NOT_SET" && wake_flag == true) {
+    if (power_saver && !stream_active && ssid != "NOT_SET" && wake_flag == true) {
       if (millis() >= sleep_time) {              // Only if 120 seconds passed
         if (digitalRead(ESP_WAKEUP_PIN) == 0) {  // Only if STM not measuring data
           wake_flag = false;
@@ -280,7 +362,7 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
     /* SLEEP - 5 seconds of no activity on radar (Power-Saver Mode only) */
     unsigned long currentMillis = millis();
 
-    if (power_saver && ssid != "NOT_SET" && wake_flag == false) {
+    if (power_saver && !stream_active && ssid != "NOT_SET" && wake_flag == false) {
       if (speed == 0) {  // Check if speed is 0
         if (currentMillis - previousMillis >= interval) {
           previousMillis = currentMillis;      // Save the last time
@@ -312,7 +394,9 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
 
     }
 
-    if (ignore_flag == false) {
+    // Pause speed tracking while the aiming stream is up: the device is being
+    // mounted (not measuring), and the stream task owns the camera framebuffer.
+    if (ignore_flag == false && !stream_active) {
       // Debounce: count consecutive over-threshold readings; a single glitch
       // resets the count, so it can never reach SPEED_CONFIRM_COUNT.
       static int speedConfirmCount = 0;

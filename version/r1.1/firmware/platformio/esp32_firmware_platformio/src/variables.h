@@ -25,6 +25,12 @@ volatile bool power_saver;
 
 volatile bool connect_wifi;  // Core 1 -> Core 0: please attempt a WiFi (re)connect
 
+// --- Aiming video stream (temporary setup/mounting tool) ---
+// Desired state is toggled from the ESPUI switcher (and cleared by the auto-off
+// timeout); taskCore1's streamService() reconciles it against the real server.
+volatile bool stream_active = false;    // true = aiming MJPEG stream should be running
+volatile unsigned long stream_deadline; // millis() at which the stream auto-stops
+
 // --- Core 1 -> Core 0 upload handoff ---
 // One tracking run produces one UploadRequest, posted to uploadQueue when the
 // run ends (so speed_actual is final). Core 0 blocks on the queue instead of
@@ -60,6 +66,8 @@ String httpsRequestData;     // Request-body buffer used by sendLocalIP()
 // --- ESPUI control handles ---
 uint16_t wifi_ssid_text, wifi_pass_text, camera_id_text;  // ESPUI text inputs for credentials
 uint16_t labelSpeed;         // ESPUI label showing the live speed reading
+uint16_t labelStream;        // ESPUI label showing the aiming-stream URL (or "off")
+uint16_t aimingSwitchId;     // ESPUI switcher handle, so streamStop() can flip it off on auto-off
 String local_ip_address;     // Most recent station-mode IP (sent to the cloud)
 
 // Captive-DNS config for AP mode. NOTE: dnsServer.start() is never called
