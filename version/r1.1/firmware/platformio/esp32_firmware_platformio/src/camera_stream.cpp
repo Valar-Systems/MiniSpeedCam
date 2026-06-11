@@ -61,6 +61,10 @@ static esp_err_t stream_mjpeg_handler(httpd_req_t* req) {
   if (res != ESP_OK) return res;
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 
+  // Pace the stream. The freeze turned out to be ESPUI WebSocket broadcasts from
+  // taskCore1 blocking on AsyncTCP under streaming load (now suppressed while the
+  // stream is up), NOT stream bandwidth -- so a smooth ~10 fps is fine. Tunable.
+  const TickType_t frame_interval = pdMS_TO_TICKS(100);  // ~10 fps
   char part_buf[64];
   while (true) {
     camera_fb_t* fb = esp_camera_fb_get();
@@ -77,6 +81,8 @@ static esp_err_t stream_mjpeg_handler(httpd_req_t* req) {
     esp_camera_fb_return(fb);
 
     if (res != ESP_OK) break;  // client gone
+
+    vTaskDelay(frame_interval);  // pace + yield CPU to Wi-Fi / AsyncTCP / radar
   }
   return res;
 }

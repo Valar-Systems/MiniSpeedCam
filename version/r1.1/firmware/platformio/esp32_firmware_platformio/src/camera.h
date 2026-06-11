@@ -96,9 +96,12 @@ int cameraSetup(void) {
   }
 
   sensor_t* s = esp_camera_sensor_get();
-  // initial sensors are flipped vertically and colors are a bit saturated
-  s->set_vflip(s, 1);       // 0 = disable , 1 = enable
-  s->set_hmirror(s, 0);     // 0 = disable , 1 = enable
+  // Orientation for the camera as mounted in this enclosure: vflip OFF (it was
+  // enabled, which left the image upside down). Colors run a touch saturated,
+  // so trim brightness/saturation below. This applies to BOTH the aiming stream
+  // and the uploaded speed photos -- they share the one sensor.
+  s->set_vflip(s, 0);       // 0 = disable , 1 = enable (flips top<->bottom)
+  s->set_hmirror(s, 0);     // 0 = disable , 1 = enable (flips left<->right)
   s->set_brightness(s, 1);  // up the brightness just a bit
   s->set_saturation(s, 0);  // lower the saturation
 
