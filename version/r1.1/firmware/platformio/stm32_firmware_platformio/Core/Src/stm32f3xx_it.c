@@ -58,7 +58,7 @@ volatile uint8_t Timer1, Timer2;
 /* External variables --------------------------------------------------------*/
 extern DMA_HandleTypeDef hdma_adc1;
 /* USER CODE BEGIN EV */
-
+extern UART_HandleTypeDef huart1;
 /* USER CODE END EV */
 
 /******************************************************************************/
@@ -220,6 +220,15 @@ void DMA1_Channel1_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
+
+/**
+  * @brief This function handles USART1 global interrupt (IT-driven RX of the
+  *        ESP32 command bytes; see HAL_UART_RxCpltCallback in main.c).
+  */
+void USART1_IRQHandler(void)
+{
+  HAL_UART_IRQHandler(&huart1);
+}
 
 void SDTimer_Handler(void)
 {

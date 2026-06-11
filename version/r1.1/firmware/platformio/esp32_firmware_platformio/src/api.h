@@ -48,6 +48,26 @@ static const char* deviceHostname() {
 // raise back toward WIFI_POWER_19_5dBm if WiFi range becomes the problem.
 #define WIFI_TX_POWER WIFI_POWER_11dBm
 
+// --- Radar-blanking handshake (ESP RADAR_BLANK_PIN / GPIO2 -> STM32 PA4) ------
+// Held HIGH while the ESP is mid WiFi burst (upload, (re)connect). The STM32
+// discards any FFT frame it sees during that window, since the TX current
+// slumps the shared rail and corrupts the radar read. A depth counter makes
+// nested asserts safe (e.g. sendUpload() -> connectWifi()): the line only drops
+// when the outermost scope exits. Use RadarBlankGuard so every return path
+// clears it automatically.
+static volatile int radarBlankDepth = 0;
+static inline void radarBlank(bool on) {
+  if (on) {
+    if (radarBlankDepth++ == 0) digitalWrite(RADAR_BLANK_PIN, HIGH);
+  } else if (radarBlankDepth > 0 && --radarBlankDepth == 0) {
+    digitalWrite(RADAR_BLANK_PIN, LOW);
+  }
+}
+struct RadarBlankGuard {
+  RadarBlankGuard() { radarBlank(true); }
+  ~RadarBlankGuard() { radarBlank(false); }
+};
+
 /**
  * Apply the TLS trust policy to a secure client.
  *
@@ -72,6 +92,7 @@ static void applyTlsPolicy(WiFiClientSecure& client) {
  */
 void connectWifiAP() {
   int connect_timeout;
+  RadarBlankGuard _blank;  // the whole STA/AP bring-up transmits; blank the radar
 
   WiFi.setHostname(deviceHostname());
   Serial.println("Connecting WiFi/AP");
@@ -156,6 +177,7 @@ void connectWifi() {
     return;
   }
 
+  RadarBlankGuard _blank;  // the association/auth burst slumps the shared rail
   Serial.println("Connecting WiFi");
   WiFi.setSleep(false);  // TEST
   WiFi.mode(WIFI_STA);
@@ -257,6 +279,7 @@ void sendLocalIP() {
 
   //Check WiFi connection status
   if (WiFi.status() == WL_CONNECTED) {
+    RadarBlankGuard _blank;  // blank the radar for the IP-announce POST
     Serial.println("Sending API");
     // set secure client without certificate
 
@@ -442,6 +465,10 @@ void sendUpload(const UploadRequest& req) {
     Serial.println("Not in STATION MODE");
     return;
   }
+
+  // Blank the radar for the (possible) reconnect + the POST below; the guard
+  // clears it on every return path. connectWifi() nests its own guard safely.
+  RadarBlankGuard _blank;
 
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("Not connected to WiFi");
