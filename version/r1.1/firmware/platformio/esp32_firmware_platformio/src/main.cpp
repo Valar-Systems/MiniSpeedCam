@@ -183,6 +183,7 @@ void setup() {
   camera_id = preferences.getString("camera_id", "NOT_SET");  // Create an account and camera at tachtracker.com
   min_speed = preferences.getInt("min_speed", 3);             // The minimum speed (MPH) that the tracker should track any vehicle and upload data
   photo_speed = preferences.getInt("photo_speed", 10);        // Cars speed (MPH) when photo should be taken
+  min_signal = preferences.getInt("min_signal", 0);           // Min radar echo strength to arm a run (0 = off; proximity gate, see variables.h)
   is_kph = preferences.getBool("is_kph", 0);                  // Cars speed (MPH) when photo should be taken
   power_saver = preferences.getBool("power_saver", true);     // true = drop WiFi during idle (default); false = never sleep
 
@@ -400,19 +401,29 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
     // Pause speed tracking while the aiming stream is up: the device is being
     // mounted (not measuring), and the stream task owns the camera framebuffer.
     if (ignore_flag == false && !stream_active) {
-      // Debounce: count consecutive over-threshold readings; a single glitch
+      // A sample qualifies to arm a run only if it is both fast enough AND
+      // close enough: speed >= min_speed and the radar echo magnitude >=
+      // min_signal (the proximity gate -- distant cross-traffic returns a weak
+      // peak even at speed, so it never qualifies). min_signal == 0 disables
+      // the gate (g_last_peak_mag >= 0 is always true), preserving prior
+      // behavior until the user calibrates it.
+      const bool qualifies =
+          (speed >= min_speed) && ((int)g_last_peak_mag >= min_signal);
+
+      // Debounce: count consecutive qualifying readings; a single glitch
       // resets the count, so it can never reach SPEED_CONFIRM_COUNT.
       static int speedConfirmCount = 0;
-      if (speed >= min_speed) {
+      if (qualifies) {
         speedConfirmCount++;
       } else {
         speedConfirmCount = 0;
       }
 
-      if (speed >= min_speed && speedConfirmCount >= SPEED_CONFIRM_COUNT) {
+      if (qualifies && speedConfirmCount >= SPEED_CONFIRM_COUNT) {
         speedConfirmCount = 0;  // consumed; the run loop below tracks the pass
 
-        Serial.printf("[RUN] start: speed=%d >= min_speed=%d (confirmed)\n", speed, min_speed);
+        Serial.printf("[RUN] start: speed=%d >= min_speed=%d, mag=%u >= min_signal=%d (confirmed)\n",
+                      speed, min_speed, (unsigned)g_last_peak_mag, min_signal);
 
         delay(100);
         maxSpeed = 0;               // Tracks the max speed over the entire pass

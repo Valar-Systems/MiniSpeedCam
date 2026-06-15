@@ -35,6 +35,11 @@ static const float MAX_PLAUSIBLE_SPEED = 250.0f;
  *             (negative / above MAX_PLAUSIBLE_SPEED) and treated as noise.
  */
 float get_speed(bool kmh) {
+  // Clear the proximity reading up front: every early-return below (no data,
+  // bad checksum, junk speed) then leaves it at 0, so a stale magnitude can
+  // never arm a run. Only a fully valid reply sets it (just before return).
+  g_last_peak_mag = 0;
+
   // Drain any stale or noise bytes sitting in the RX buffer so we parse the
   // fresh reply rather than leftover garbage (UART line noise from WiFi
   // activity can leave partial/junk bytes here).
@@ -50,10 +55,10 @@ float get_speed(bool kmh) {
     Serial1.print('m');
   }
 
-  // Read the reply line "<value>*<CK>\r\n", bounded to 50ms. We collect a full
-  // line (rather than parseFloat) so the checksum can be verified; the original
-  // could also race the reply and let parseFloat block on noise.
-  char line[16];
+  // Read the reply line "<value>,<mag>*<CK>\r\n", bounded to 50ms. We collect a
+  // full line (rather than parseFloat) so the checksum can be verified; the
+  // original could also race the reply and let parseFloat block on noise.
+  char line[24];
   int idx = 0;
   bool got_line = false;
   unsigned long start = millis();
@@ -97,15 +102,27 @@ float get_speed(bool kmh) {
     return 0;
   }
 
-  // STM32 reports speed * 10 as an ASCII integer; scale back.
+  // value_str is "<speed>,<mag>": speed * 10 as an ASCII integer (atoi stops at
+  // the comma), and the clamped FFT peak magnitude after it (the proximity
+  // proxy). Scale the speed back to real units.
   float speed = atoi(value_str) / 10.0f;
 
   // Reject implausible values: negative or beyond the physical ceiling are
   // noise, not a real vehicle. Returning 0 keeps junk out of the run-trigger
-  // and upload paths entirely.
+  // and upload paths entirely (g_last_peak_mag stays 0 from the top of fn).
   if (speed < 0.0f || speed > MAX_PLAUSIBLE_SPEED) {
     Serial.printf("[RADAR] rejected junk reading: %.1f\n", speed);
     return 0;
+  }
+
+  // Reading is good: publish the magnitude for the proximity gate. Older STM32
+  // firmware that omits the ",<mag>" field simply leaves this at 0 (gate off).
+  const char* comma = strchr(value_str, ',');
+  if (comma != nullptr) {
+    long mag = strtol(comma + 1, nullptr, 10);
+    if (mag < 0) mag = 0;
+    if (mag > 65535) mag = 65535;
+    g_last_peak_mag = (uint16_t)mag;
   }
 
   return speed;

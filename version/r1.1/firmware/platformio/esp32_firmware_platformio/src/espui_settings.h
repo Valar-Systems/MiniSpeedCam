@@ -101,6 +101,20 @@ void photoSpeedCall(Control* sender, int type) {
   preferences.putInt("photo_speed", photo_speed);
 }
 
+/**
+ * Persist the minimum radar echo strength (proximity gate) required to arm a
+ * run. The STM32 reports an FFT peak magnitude alongside each speed; magnitude
+ * tracks received power (~1/r^4), so distant cross-traffic reads weak. Set this
+ * between the "Signal" readings you see for a car on the road vs. a distant one
+ * (watch the Status tab). 0 = disabled.
+ */
+void minSignalCall(Control* sender, int type) {
+  Serial.print(", Value: ");
+  Serial.println(sender->value);
+  min_signal = sender->value.toInt();
+  preferences.putInt("min_signal", min_signal);
+}
+
 // Camera ID is read directly off the ESPUI control inside
 // buttonSaveNetworkCall(), so per-keystroke handling is unnecessary.
 void textCameraIdCall(Control* sender, int type) {
@@ -159,6 +173,7 @@ void buttonClearNetworkCall(Control* sender, int type) {
 // updateStatusDisplay(). Like updateSpeedDisplay(), that runs on Core 1 so
 // all ESPUI WebSocket writes come from a single task.
 static uint16_t status_speed_label = 0;
+static uint16_t status_signal_label = 0;  // live radar echo magnitude (proximity calibration)
 static uint16_t status_heap_label = 0;
 static uint16_t status_psram_label = 0;
 static uint16_t status_uptime_label = 0;
@@ -200,6 +215,7 @@ void load_espui(void) {
   ESPUI.addControl(ControlType::Switcher, "Power-Saver Mode (drop WiFi when idle):", String(power_saver), ControlColor::Alizarin, tab1, &powerSaverCall);
   ESPUI.addControl(ControlType::Number, "Minimum Speed:", String(min_speed), ControlColor::Alizarin, tab1, &minSpeedCall);
   ESPUI.addControl(ControlType::Number, "Photo Speed:", String(photo_speed), ControlColor::Alizarin, tab1, &photoSpeedCall);
+  ESPUI.addControl(ControlType::Number, "Min Signal (proximity, 0=off):", String(min_signal), ControlColor::Alizarin, tab1, &minSignalCall);
 
   //tab1: Aiming video stream (temporary setup aid; auto-stops after 5 min)
   aimingSwitchId = ESPUI.addControl(ControlType::Switcher, "Aiming Stream (video, 5 min):", "0", ControlColor::Sunflower, tab1, &aimingStreamCall);
@@ -222,6 +238,7 @@ void load_espui(void) {
 
   //tab3: Status (live diagnostics, refreshed by updateStatusDisplay())
   status_speed_label        = ESPUI.addControl(ControlType::Label, "Current Speed",     "—",          ControlColor::Peterriver, tab3);
+  status_signal_label       = ESPUI.addControl(ControlType::Label, "Signal (proximity)", "0",         ControlColor::Peterriver, tab3);
   status_heap_label         = ESPUI.addControl(ControlType::Label, "Free heap (B)",     "0",          ControlColor::Peterriver, tab3);
   status_psram_label        = ESPUI.addControl(ControlType::Label, "Free PSRAM (B)",    "0",          ControlColor::Peterriver, tab3);
   status_uptime_label       = ESPUI.addControl(ControlType::Label, "Uptime",            "0h 00m 00s", ControlColor::Peterriver, tab3);
@@ -292,6 +309,7 @@ void updateStatusDisplay(void) {
 
   bool connected = (WiFi.status() == WL_CONNECTED);
   ESPUI.updateLabel(status_speed_label, String(speed) + (is_kph ? " KPH" : " MPH"));
+  ESPUI.updateLabel(status_signal_label, String(g_last_peak_mag));  // live echo strength for proximity calibration
   ESPUI.updateLabel(status_heap_label, String(ESP.getFreeHeap()));
   ESPUI.updateLabel(status_psram_label, String(ESP.getFreePsram()));
   ESPUI.updateLabel(status_uptime_label, String(uptime_buf));

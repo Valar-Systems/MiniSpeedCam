@@ -17,6 +17,15 @@ int photo_speed;             // Speed threshold within a run that triggers a pho
 bool is_kph;                 // true = KPH units, false = MPH (persisted in NVS)
 int maxSpeed;                // Highest speed observed during the current tracking run
 
+// Proximity gate (persisted in NVS). The STM32 reports the FFT peak magnitude
+// alongside each speed; magnitude tracks received power (~1/r^4), so a distant
+// car reads weak while a car on the road reads strong. A run only arms when the
+// live magnitude is >= min_signal, which rejects distant cross-traffic that the
+// speed/SNR checks can't. 0 = disabled (no proximity gating; default until the
+// user calibrates against the live reading on the Status tab).
+int min_signal;              // Minimum peak magnitude to arm a run (0 = off)
+volatile uint16_t g_last_peak_mag;  // Magnitude from the most recent get_speed() reply
+
 // Power-Saver Mode (persisted in NVS). When true the radar loop drops WiFi
 // during the idle/sleep windows to save power; when false the device never
 // sleeps and WiFi stays up (handy for keeping the web UI reachable). Written
