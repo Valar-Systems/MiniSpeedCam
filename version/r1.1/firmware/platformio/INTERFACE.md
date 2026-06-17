@@ -60,21 +60,27 @@ replies with one **checksummed** ASCII line terminated by `\r\n`.
 
 | ESP sends | STM32 replies | Meaning |
 |-----------|---------------|---------|
-| `'m'` | `<int>*<CK>\r\n` | Latest speed in **MPH × 10**, checksummed |
-| `'k'` | `<int>*<CK>\r\n` | Latest speed in **KPH × 10**, checksummed |
+| `'m'` | `<int>,<mag>*<CK>\r\n` | Latest speed in **MPH × 10** + echo magnitude, checksummed |
+| `'k'` | `<int>,<mag>*<CK>\r\n` | Latest speed in **KPH × 10** + echo magnitude, checksummed |
 | `'a'` / `'s'` | (raw dump on/off) | Debug: stream raw ADC/FFT buffers (not used in normal operation) |
 | `'h'` / `'l'` | — | Debug: enable/disable low-frequency rejection |
 | `'d'` | — | Debug: toggle the per-frame `DBG …` diagnostic dump (emitted on **USART2**, not this link) |
 
-- **Reply format:** `<int>*<CK>\r\n`, e.g. `298*33`. `<int>` is **speed × 10**
-  (so `298` → 29.8). `<CK>` is the **XOR of the value's ASCII digits**, printed as
-  two hex chars (`'2'^'9'^'8' = 0x33`). The ESP verifies the checksum in
-  [`get_speed()`](esp32_firmware_platformio/src/radar.h) and returns 0 on any mismatch.
-  This rejects the dangerous corruption the plausibility ceiling can't catch — a
-  flipped bit that lands on another in-range value (e.g. `29` → `79` mph). The
-  STM32 derives `<int>` from the FFT peak frequency using a CDM324 calibration
-  constant (≈0.145 for MPH×10, ≈0.226 for KPH×10) — see the command handler /
-  `uart_reply_speed()` in [STM32 `main.c`](stm32_firmware_platformio/Core/Src/main.c).
+- **Reply format:** `<int>,<mag>*<CK>\r\n`, e.g. `298,1024*0E`. `<int>` is
+  **speed × 10** (so `298` → 29.8, `<CK>`=`0x18`). `<mag>` is the **clamped FFT peak magnitude**
+  (the proximity proxy, `analog_dbg_peak_mag >> 4`, clamped to `[0, 65535]`; `0`
+  when the frame failed the SNR gate — i.e. `<mag>` is 0 exactly when `<int>` is).
+  `<CK>` is the **XOR of every ASCII char of the `<int>,<mag>` payload — digits
+  *and* the comma** — printed as two hex chars. The ESP verifies the checksum in
+  [`get_speed()`](esp32_firmware_platformio/src/radar.h) and returns 0 on any
+  mismatch. This rejects the dangerous corruption the plausibility ceiling can't
+  catch — a flipped bit that lands on another in-range value (e.g. `29` → `79`
+  mph). The ESP publishes `<mag>` as `g_last_peak_mag`, which drives the proximity
+  gate (`min_signal`) and the direction-aware photo timing (`photo_signal`); a
+  reply that omits `,<mag>` (older STM32 firmware) leaves it 0, disabling both.
+  The STM32 derives `<int>` from the FFT peak frequency using a CDM324
+  calibration constant (≈0.145 for MPH×10, ≈0.226 for KPH×10) — see the command
+  handler / `uart_reply_speed()` in [STM32 `main.c`](stm32_firmware_platformio/Core/Src/main.c).
 
 ### Important timing/behavior contract
 

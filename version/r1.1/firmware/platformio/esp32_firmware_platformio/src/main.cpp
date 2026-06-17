@@ -461,30 +461,42 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
             Serial.println(maxSpeed);
           }
 
-          if (g_last_peak_mag > peak_mag) peak_mag = g_last_peak_mag;
-          const bool now_above = ((int)g_last_peak_mag >= photo_signal);
+          // A 0 magnitude is "no valid target this sample" -- the STM32 had no
+          // fresh FFT, or the reply failed the checksum (both common on this
+          // noisy shared-rail board; see INTERFACE.md / get_speed()). It is NOT
+          // "the echo fell to zero," so it must not look like a DOWN-crossing:
+          // that would fire a bogus REAR-plate shot (and latch photo_taken) on a
+          // single dropped or corrupted reply. For proximity timing, act only on
+          // samples that carry a real echo and hold prev_above across a dropout.
+          // Legacy mode (photo_signal == 0) ignores magnitude and is unaffected.
+          if (prox_enabled && g_last_peak_mag == 0) {
+            // dropped/noisy sample: no proximity info -- keep prev_above as-is
+          } else {
+            if (g_last_peak_mag > peak_mag) peak_mag = g_last_peak_mag;
+            const bool now_above = ((int)g_last_peak_mag >= photo_signal);
 
-          if ((maxSpeed >= photo_speed) && !photo_taken) {  // confirmed speeder, capture once
-            bool fire = false;
-            if (!prox_enabled) {
-              fire = true;  // legacy: first frame past photo_speed
-            } else if (now_above != prev_above) {
-              fire = true;
-              plate = now_above ? "FRONT (oncoming)" : "REAR (receding)";
-            } else if (peak_mag > 0 &&
-                       (int)g_last_peak_mag < (int)((peak_mag * PHOTO_PEAK_DROP_PCT) / 100)) {
-              fire = true;
-              plate = "PEAK (fallback)";
+            if ((maxSpeed >= photo_speed) && !photo_taken) {  // confirmed speeder, capture once
+              bool fire = false;
+              if (!prox_enabled) {
+                fire = true;  // legacy: first frame past photo_speed
+              } else if (now_above != prev_above) {
+                fire = true;
+                plate = now_above ? "FRONT (oncoming)" : "REAR (receding)";
+              } else if (peak_mag > 0 &&
+                         (int)g_last_peak_mag < (int)((peak_mag * PHOTO_PEAK_DROP_PCT) / 100)) {
+                fire = true;
+                plate = "PEAK (fallback)";
+              }
+              if (fire) {
+                Serial.printf("[PHOTO] capture: plate=%s speed=%d max=%d mag=%u peak=%u photo_signal=%d\n",
+                              plate, speed, maxSpeed, (unsigned)g_last_peak_mag,
+                              (unsigned)peak_mag, photo_signal);
+                fb = capturePhoto();  // keep the framebuffer; Core 0 returns it after upload
+                photo_taken = true;
+              }
             }
-            if (fire) {
-              Serial.printf("[PHOTO] capture: plate=%s speed=%d max=%d mag=%u peak=%u photo_signal=%d\n",
-                            plate, speed, maxSpeed, (unsigned)g_last_peak_mag,
-                            (unsigned)peak_mag, photo_signal);
-              fb = capturePhoto();  // keep the framebuffer; Core 0 returns it after upload
-              photo_taken = true;
-            }
+            prev_above = now_above;
           }
-          prev_above = now_above;
 
           delay(100);
         }

@@ -5,10 +5,13 @@
  * a tiny ASCII protocol over UART1 (1,000,000 baud, 8N1):
  *   - Send 'm' to request the latest speed in MPH * 10.
  *   - Send 'k' to request the latest speed in KPH * 10.
- *   - The STM32 replies with "<value>*<CK>\r\n", where <CK> is the XOR of the
- *     value's ASCII digits as two hex chars (e.g. "298*33"). We verify the
- *     checksum and reject any reply that doesn't match, so UART corruption
- *     (frequent on this noisy board) can't inject a plausible-but-wrong speed.
+ *   - The STM32 replies with "<value>,<mag>*<CK>\r\n", where <value> is speed*10,
+ *     <mag> is the clamped FFT peak magnitude (a proximity proxy, ~1/r^4; 0 when
+ *     no target), and <CK> is the XOR of every ASCII char of the "<value>,<mag>"
+ *     payload (digits and the comma) as two hex chars (e.g. "298,1024*18"). We
+ *     verify the checksum and reject any reply that doesn't match, so UART
+ *     corruption (frequent on this noisy board) can't inject a plausible-but-
+ *     wrong speed. We publish <mag> as g_last_peak_mag for the proximity gate.
  *
  * On reset, the STM32 emits a banner string which we drain here so it
  * doesn't pollute the first speed query.
