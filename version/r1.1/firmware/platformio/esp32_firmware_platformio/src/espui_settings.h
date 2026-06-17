@@ -115,6 +115,22 @@ void minSignalCall(Control* sender, int type) {
   preferences.putInt("min_signal", min_signal);
 }
 
+/**
+ * Persist the echo magnitude (proximity) at which to FIRE THE PHOTO. With the
+ * unit aimed down the road, an oncoming car's magnitude rises and a receding
+ * car's falls, so the firmware shoots when the live magnitude crosses this
+ * value -- catching the front plate on the way in and the rear plate on the way
+ * out. Set it (watching the Status "Signal" reading) to the value a car shows
+ * when it's best framed for the plate; keep it above "Min Signal". 0 = off
+ * (legacy: capture at Photo Speed).
+ */
+void photoSignalCall(Control* sender, int type) {
+  Serial.print(", Value: ");
+  Serial.println(sender->value);
+  photo_signal = sender->value.toInt();
+  preferences.putInt("photo_signal", photo_signal);
+}
+
 // Camera ID is read directly off the ESPUI control inside
 // buttonSaveNetworkCall(), so per-keystroke handling is unnecessary.
 void textCameraIdCall(Control* sender, int type) {
@@ -216,6 +232,7 @@ void load_espui(void) {
   ESPUI.addControl(ControlType::Number, "Minimum Speed:", String(min_speed), ControlColor::Alizarin, tab1, &minSpeedCall);
   ESPUI.addControl(ControlType::Number, "Photo Speed:", String(photo_speed), ControlColor::Alizarin, tab1, &photoSpeedCall);
   ESPUI.addControl(ControlType::Number, "Min Signal (proximity, 0=off):", String(min_signal), ControlColor::Alizarin, tab1, &minSignalCall);
+  ESPUI.addControl(ControlType::Number, "Photo Signal (plate-distance, 0=off):", String(photo_signal), ControlColor::Alizarin, tab1, &photoSignalCall);
 
   //tab1: Aiming video stream (temporary setup aid; auto-stops after 5 min)
   aimingSwitchId = ESPUI.addControl(ControlType::Switcher, "Aiming Stream (video, 5 min):", "0", ControlColor::Sunflower, tab1, &aimingStreamCall);

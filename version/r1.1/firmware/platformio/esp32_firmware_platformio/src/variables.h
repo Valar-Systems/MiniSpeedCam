@@ -24,6 +24,7 @@ int maxSpeed;                // Highest speed observed during the current tracki
 // speed/SNR checks can't. 0 = disabled (no proximity gating; default until the
 // user calibrates against the live reading on the Status tab).
 int min_signal;              // Minimum peak magnitude to arm a run (0 = off)
+int photo_signal;            // Echo magnitude (proximity) at which to fire the photo: an UP crossing = oncoming (front plate), DOWN = receding (rear plate). 0 = off (legacy: capture at photo_speed).
 volatile uint16_t g_last_peak_mag;  // Magnitude from the most recent get_speed() reply
 
 // Power-Saver Mode (persisted in NVS). When true the radar loop drops WiFi
