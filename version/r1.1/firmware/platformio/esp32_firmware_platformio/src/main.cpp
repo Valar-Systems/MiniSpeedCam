@@ -183,6 +183,8 @@ void setup() {
   camera_id = preferences.getString("camera_id", "NOT_SET");  // Create an account and camera at tachtracker.com
   min_speed = preferences.getInt("min_speed", 3);             // The minimum speed (MPH) that the tracker should track any vehicle and upload data
   photo_speed = preferences.getInt("photo_speed", 10);        // Cars speed (MPH) when photo should be taken
+  min_signal = preferences.getInt("min_signal", 0);           // Min radar echo strength to arm a run (0 = off; proximity gate, see variables.h)
+  photo_signal = preferences.getInt("photo_signal", 0);       // Echo strength at which to fire the photo (direction-aware proximity timing; 0 = off, capture at photo_speed)
   is_kph = preferences.getBool("is_kph", 0);                  // Cars speed (MPH) when photo should be taken
   power_saver = preferences.getBool("power_saver", true);     // true = drop WiFi during idle (default); false = never sleep
 
@@ -276,6 +278,11 @@ const long interval = 5000;        // Idle window (ms) of zero-speed before slee
 // a single sample, so requiring 2 in a row rejects glitches while a real
 // vehicle (many samples) still triggers immediately.
 const int SPEED_CONFIRM_COUNT = 2;
+
+// Direction-aware photo timing fallback: if a car never cleanly crosses
+// photo_signal during its run, still fire once magnitude has fallen to this
+// percent of the run's peak -- a best-effort "near closest approach" shot.
+const int PHOTO_PEAK_DROP_PCT = 70;
 
 /**
  * Core 1 task: radar polling, sleep policy, and ESPUI/DNS servicing.
@@ -400,24 +407,49 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
     // Pause speed tracking while the aiming stream is up: the device is being
     // mounted (not measuring), and the stream task owns the camera framebuffer.
     if (ignore_flag == false && !stream_active) {
-      // Debounce: count consecutive over-threshold readings; a single glitch
+      // A sample qualifies to arm a run only if it is both fast enough AND
+      // close enough: speed >= min_speed and the radar echo magnitude >=
+      // min_signal (the proximity gate -- distant cross-traffic returns a weak
+      // peak even at speed, so it never qualifies). min_signal == 0 disables
+      // the gate (g_last_peak_mag >= 0 is always true), preserving prior
+      // behavior until the user calibrates it.
+      const bool qualifies =
+          (speed >= min_speed) && ((int)g_last_peak_mag >= min_signal);
+
+      // Debounce: count consecutive qualifying readings; a single glitch
       // resets the count, so it can never reach SPEED_CONFIRM_COUNT.
       static int speedConfirmCount = 0;
-      if (speed >= min_speed) {
+      if (qualifies) {
         speedConfirmCount++;
       } else {
         speedConfirmCount = 0;
       }
 
-      if (speed >= min_speed && speedConfirmCount >= SPEED_CONFIRM_COUNT) {
+      if (qualifies && speedConfirmCount >= SPEED_CONFIRM_COUNT) {
         speedConfirmCount = 0;  // consumed; the run loop below tracks the pass
 
-        Serial.printf("[RUN] start: speed=%d >= min_speed=%d (confirmed)\n", speed, min_speed);
+        Serial.printf("[RUN] start: speed=%d >= min_speed=%d, mag=%u >= min_signal=%d (confirmed)\n",
+                      speed, min_speed, (unsigned)g_last_peak_mag, min_signal);
 
         delay(100);
         maxSpeed = 0;               // Tracks the max speed over the entire pass
         bool photo_taken = false;   // ensures we capture at most one frame per run
         camera_fb_t* fb = nullptr;  // held framebuffer, handed to Core 0 for streaming
+
+        // --- Direction-aware photo timing (proximity) ----------------------
+        // The radar can't sense direction, but with the unit aimed down the
+        // road the echo magnitude (g_last_peak_mag, ~1/r^4) RISES for an
+        // oncoming car (front plate) and FALLS for one going away (rear plate).
+        // So we fire at the first time magnitude crosses photo_signal: an UP
+        // crossing => oncoming, grab the FRONT plate as it nears; a DOWN
+        // crossing => receding, grab the REAR plate as it pulls away. That's
+        // the "two timings" -- same proximity, opposite flank of the pass. A
+        // peak fallback covers cars that never cleanly cross. photo_signal == 0
+        // keeps the legacy "first frame past photo_speed" behavior.
+        const bool prox_enabled = (photo_signal > 0);
+        bool prev_above = ((int)g_last_peak_mag >= photo_signal);
+        uint16_t peak_mag = g_last_peak_mag;
+        const char* plate = "legacy";
 
         while (speed >= min_speed) {  // Track the car's maximum speed over the whole pass.
           speed = get_speed(is_kph);  // Get speed (KPH or MPH per setting) from STM32 via UART
@@ -429,10 +461,41 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
             Serial.println(maxSpeed);
           }
 
-          if ((maxSpeed >= photo_speed) && (photo_taken == false)) {  // Capture once per run
-            Serial.println("Taking photo_speed photo");
-            fb = capturePhoto();  // keep the framebuffer; Core 0 returns it after upload
-            photo_taken = true;
+          // A 0 magnitude is "no valid target this sample" -- the STM32 had no
+          // fresh FFT, or the reply failed the checksum (both common on this
+          // noisy shared-rail board; see INTERFACE.md / get_speed()). It is NOT
+          // "the echo fell to zero," so it must not look like a DOWN-crossing:
+          // that would fire a bogus REAR-plate shot (and latch photo_taken) on a
+          // single dropped or corrupted reply. For proximity timing, act only on
+          // samples that carry a real echo and hold prev_above across a dropout.
+          // Legacy mode (photo_signal == 0) ignores magnitude and is unaffected.
+          if (prox_enabled && g_last_peak_mag == 0) {
+            // dropped/noisy sample: no proximity info -- keep prev_above as-is
+          } else {
+            if (g_last_peak_mag > peak_mag) peak_mag = g_last_peak_mag;
+            const bool now_above = ((int)g_last_peak_mag >= photo_signal);
+
+            if ((maxSpeed >= photo_speed) && !photo_taken) {  // confirmed speeder, capture once
+              bool fire = false;
+              if (!prox_enabled) {
+                fire = true;  // legacy: first frame past photo_speed
+              } else if (now_above != prev_above) {
+                fire = true;
+                plate = now_above ? "FRONT (oncoming)" : "REAR (receding)";
+              } else if (peak_mag > 0 &&
+                         (int)g_last_peak_mag < (int)((peak_mag * PHOTO_PEAK_DROP_PCT) / 100)) {
+                fire = true;
+                plate = "PEAK (fallback)";
+              }
+              if (fire) {
+                Serial.printf("[PHOTO] capture: plate=%s speed=%d max=%d mag=%u peak=%u photo_signal=%d\n",
+                              plate, speed, maxSpeed, (unsigned)g_last_peak_mag,
+                              (unsigned)peak_mag, photo_signal);
+                fb = capturePhoto();  // keep the framebuffer; Core 0 returns it after upload
+                photo_taken = true;
+              }
+            }
+            prev_above = now_above;
           }
 
           delay(100);
