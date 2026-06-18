@@ -131,6 +131,28 @@ void photoSignalCall(Control* sender, int type) {
   preferences.putInt("photo_signal", photo_signal);
 }
 
+/**
+ * Persist the FRONT (oncoming) fire threshold. A car's front reflects strongly,
+ * so an oncoming car reaches a given magnitude while still far -- RAISE this to
+ * delay the front-plate shot until the car is closer/better framed. 0 = inherit
+ * the shared "Photo Signal" value. Keep it >= "Min Signal".
+ */
+void photoSignalFrontCall(Control* sender, int type) {
+  photo_signal_front = sender->value.toInt();
+  preferences.putInt("ps_front", photo_signal_front);
+}
+
+/**
+ * Persist the REAR (receding) fire threshold. A car's rear reflects weakly, and
+ * the shot wants the car a bit farther out (not broadside) -- LOWER this to fire
+ * the rear-plate shot later, once the receding car has pulled away. 0 = inherit
+ * the shared "Photo Signal" value.
+ */
+void photoSignalRearCall(Control* sender, int type) {
+  photo_signal_rear = sender->value.toInt();
+  preferences.putInt("ps_rear", photo_signal_rear);
+}
+
 // Camera ID is read directly off the ESPUI control inside
 // buttonSaveNetworkCall(), so per-keystroke handling is unnecessary.
 void textCameraIdCall(Control* sender, int type) {
@@ -232,7 +254,9 @@ void load_espui(void) {
   ESPUI.addControl(ControlType::Number, "Minimum Speed:", String(min_speed), ControlColor::Alizarin, tab1, &minSpeedCall);
   ESPUI.addControl(ControlType::Number, "Photo Speed:", String(photo_speed), ControlColor::Alizarin, tab1, &photoSpeedCall);
   ESPUI.addControl(ControlType::Number, "Min Signal (proximity, 0=off):", String(min_signal), ControlColor::Alizarin, tab1, &minSignalCall);
-  ESPUI.addControl(ControlType::Number, "Photo Signal (plate-distance, 0=off):", String(photo_signal), ControlColor::Alizarin, tab1, &photoSignalCall);
+  ESPUI.addControl(ControlType::Number, "Photo Signal (shared/default, 0=off):", String(photo_signal), ControlColor::Alizarin, tab1, &photoSignalCall);
+  ESPUI.addControl(ControlType::Number, "Photo Signal FRONT (oncoming; raise=closer, 0=use shared):", String(photo_signal_front), ControlColor::Alizarin, tab1, &photoSignalFrontCall);
+  ESPUI.addControl(ControlType::Number, "Photo Signal REAR (receding; lower=farther, 0=use shared):", String(photo_signal_rear), ControlColor::Alizarin, tab1, &photoSignalRearCall);
 
   //tab1: Aiming video stream (temporary setup aid; auto-stops after 5 min)
   aimingSwitchId = ESPUI.addControl(ControlType::Switcher, "Aiming Stream (video, 5 min):", "0", ControlColor::Sunflower, tab1, &aimingStreamCall);

@@ -136,7 +136,7 @@ static void debug_dma_output_buffer(uint8_t *buffer, uint16_t size);
 //static void debug_printf(const char *fmt, ...);
 //static void debug_print_string(char* string);
 static char debug_get_char_from_uart(void);
-static void uart_reply_speed(uint16_t value, uint16_t mag);
+static void uart_reply_speed(uint16_t value, uint16_t mag, uint16_t snr);
 
 // Analog
 static uint16_t analog_compute_fft_on_cplted_sequence(BOOL remove_low_freqs);
@@ -327,9 +327,20 @@ int main(void) {
 				if (m > 65535U) {
 					m = 65535U;
 				}
+				/* Peak/floor ratio x10 (the unit-independent detection quality;
+				 * the on-chip detector needs >= 40). Unlike <mag> it doesn't
+				 * scale with target size, so the ESP32 can log it as a per-event
+				 * confidence and the floor can be trended for EMI. 0 when the
+				 * frame failed the gate or the noise floor is unknown. */
+				uint32_t snr = ((last_fft_return != 0) && (analog_dbg_floor_mean != 0))
+						? (analog_dbg_peak_mag * 10UL / analog_dbg_floor_mean)
+						: 0;
+				if (snr > 65535U) {
+					snr = 65535U;
+				}
 				float scale = (uart_input == 'k') ? 0.2262295f : 0.1449275f;
 				uart_reply_speed((uint16_t) (last_fft_return * scale),
-						(uint16_t) m);
+						(uint16_t) m, (uint16_t) snr);
 			} else if (uart_input == 'd') {
 				/* Toggle the readable diagnostic dump (see above). */
 				diag_enabled = (diag_enabled == FALSE) ? TRUE : FALSE;
@@ -604,24 +615,27 @@ char debug_get_char_from_uart(void) {
 	return c;
 }
 
-/*! \fn     uart_reply_speed(uint16_t value, uint16_t mag)
- *   \brief  Reply to an ESP32 speed query as "<value>,<mag>*<CK>\r\n"
+/*! \fn     uart_reply_speed(uint16_t value, uint16_t mag, uint16_t snr)
+ *   \brief  Reply to an ESP32 speed query as "<value>,<mag>,<snr>*<CK>\r\n"
  *   \param	value	speed in (MPH or KPH) x10
  *   \param	mag		clamped FFT peak magnitude (proximity proxy, ~1/r^4)
- *   \note	CK is the XOR of every ASCII char of the "<value>,<mag>" payload
- *   		(digits and the comma), printed as 2 hex chars, e.g.
- *   		298,1024 -> "298,1024*?? \r\n". The magnitude lets the ESP32 gate
- *   		captures on target proximity: a distant car returns a weak peak
- *   		while a car on the road towers, even when both pass the SNR gate.
- *   		The checksum lets the ESP reject UART corruption that would
- *   		otherwise stay in-range and slip past its plausibility check (a
- *   		real risk on this electrically noisy board). Stays human-readable
- *   		in the debug monitor.
+ *   \param	snr		peak/floor ratio x10 (unit-independent detection quality)
+ *   \note	CK is the XOR of every ASCII char of the "<value>,<mag>,<snr>"
+ *   		payload (digits and the commas), printed as 2 hex chars, e.g.
+ *   		298,1024,57 -> "298,1024,57*?? \r\n". The magnitude lets the ESP32
+ *   		gate captures on target proximity: a distant car returns a weak
+ *   		peak while a car on the road towers, even when both pass the SNR
+ *   		gate. The SNR is forwarded for per-event confidence/telemetry. The
+ *   		checksum lets the ESP reject UART corruption that would otherwise
+ *   		stay in-range and slip past its plausibility check (a real risk on
+ *   		this electrically noisy board). The trailing field is backward
+ *   		compatible: an older ESP parses <value>/<mag> and ignores <snr>.
+ *   		Stays human-readable in the debug monitor.
  */
-void uart_reply_speed(uint16_t value, uint16_t mag) {
-	char payload[16];
-	int n = snprintf(payload, sizeof(payload), "%u,%u", (unsigned) value,
-			(unsigned) mag);
+void uart_reply_speed(uint16_t value, uint16_t mag, uint16_t snr) {
+	char payload[24];
+	int n = snprintf(payload, sizeof(payload), "%u,%u,%u", (unsigned) value,
+			(unsigned) mag, (unsigned) snr);
 	uint8_t ck = 0;
 	for (int i = 0; i < n; i++) {
 		ck ^= (uint8_t) payload[i];
