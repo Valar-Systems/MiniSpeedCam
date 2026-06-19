@@ -24,8 +24,20 @@ int maxSpeed;                // Highest speed observed during the current tracki
 // speed/SNR checks can't. 0 = disabled (no proximity gating; default until the
 // user calibrates against the live reading on the Status tab).
 int min_signal;              // Minimum peak magnitude to arm a run (0 = off)
-int photo_signal;            // Echo magnitude (proximity) at which to fire the photo: an UP crossing = oncoming (front plate), DOWN = receding (rear plate). 0 = off (legacy: capture at photo_speed).
+int photo_signal;            // Shared/default echo-magnitude fire threshold (proximity). Used for a direction whose specific threshold below is 0. 0 = off (legacy: capture at photo_speed).
+int photo_signal_front;      // Fire the FRONT-plate shot as an oncoming car's echo rises UP through this (front reflects strong, so RAISE it to catch oncoming closer). 0 = inherit photo_signal.
+int photo_signal_rear;       // Fire the REAR-plate shot as a receding car's echo falls DOWN through this (rear reflects weak, so LOWER it to catch receding farther out). 0 = inherit photo_signal.
 volatile uint16_t g_last_peak_mag;  // Magnitude from the most recent get_speed() reply
+volatile uint16_t g_last_peak_snr;  // FFT peak SNR x10 from the most recent get_speed() reply (0 = no target / older STM32)
+
+// --- Detection-quality counters (telemetry; reported by sendLocalIP) ---
+// Lifetime counts of readings the firmware threw away, so the rejection rate is
+// visible remotely instead of only on the serial console. g_reject_speed counts
+// corrupt/implausible STM32 replies (checksum fail or out-of-range speed -- NOT
+// the common "no car" empty reply); g_reject_proximity counts samples that were
+// fast enough to arm a run but failed the proximity gate (distant cross-traffic).
+volatile uint32_t g_reject_speed;
+volatile uint32_t g_reject_proximity;
 
 // Power-Saver Mode (persisted in NVS). When true the radar loop drops WiFi
 // during the idle/sleep windows to save power; when false the device never
@@ -49,6 +61,15 @@ struct UploadRequest {
   int speed_actual;   // Final max speed for the run, in the configured units
   bool has_photo;     // true if fb holds a captured JPEG to upload
   camera_fb_t* fb;    // PSRAM framebuffer to stream (nullptr when has_photo is false)
+
+  // --- Per-event telemetry (forwarded to the cloud by sendUpload) ---
+  // Captured over the whole pass so each reading carries its own context.
+  uint8_t  direction;      // 0 = unknown, 1 = approaching (front), 2 = receding (rear)
+  uint16_t peak_mag;       // Strongest FFT peak magnitude in the run (closest approach)
+  uint16_t peak_snr;       // Strongest FFT peak SNR x10 in the run (detection confidence)
+  uint16_t mean_speed_x10; // Mean of the valid speed samples x10 (steady vs braking shape)
+  uint16_t frame_count;    // Number of valid radar samples that made up the run
+  uint32_t duration_ms;    // Wall-clock length of the run
 };
 QueueHandle_t uploadQueue;  // created in setup()
 

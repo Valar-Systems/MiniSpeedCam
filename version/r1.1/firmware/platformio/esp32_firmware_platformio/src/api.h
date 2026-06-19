@@ -317,7 +317,22 @@ void sendLocalIP() {
     https.addHeader("Authorization", recv_token);         // Adding Bearer token as HTTP header
     https.addHeader("Content-Type", "application/json");  // Adding Bearer token as HTTP header
 
-    httpsRequestData = "{\"camera\":\"" + String(camera_id) + "\",\"ip_address\":\"" + String(local_ip_address) + "\"}";
+    // Announce the IP plus a lightweight device-health snapshot. This is the
+    // one POST that fires regularly while connected, so it doubles as a
+    // heartbeat: WiFi signal, heap (incl. the low-water mark for catching slow
+    // leaks), uptime, reboot reason/count, and the lifetime rejection counters
+    // (corrupt radar replies + proximity-gated distant traffic). All additive
+    // fields -- Bubble ignores any it hasn't defined until the workflow maps them.
+    httpsRequestData = String("{\"camera\":\"") + camera_id +
+                       "\",\"ip_address\":\"" + local_ip_address +
+                       "\",\"rssi\":\"" + WiFi.RSSI() +
+                       "\",\"free_heap\":\"" + ESP.getFreeHeap() +
+                       "\",\"min_free_heap\":\"" + ESP.getMinFreeHeap() +
+                       "\",\"uptime_s\":\"" + (millis() / 1000) +
+                       "\",\"boot_count\":\"" + diagnosticsBootCount() +
+                       "\",\"reset_reason\":\"" + diagnosticsResetReason() +
+                       "\",\"reject_speed\":\"" + (unsigned long)g_reject_speed +
+                       "\",\"reject_proximity\":\"" + (unsigned long)g_reject_proximity + "\"}";
 
     Serial.println(httpsRequestData);
 
@@ -518,6 +533,18 @@ void sendUpload(const UploadRequest& req) {
   lastUploadMs = millis();
   haveUploaded = true;
 
+  // Per-event telemetry, shared by both body shapes (peak_snr and mean_speed
+  // are sent as decimals -- the STM32 reports SNR x10, and mean is x10 here).
+  // These are ADDITIVE JSON fields: the Bubble capture workflow ignores any
+  // parameter it hasn't defined, so sending them is safe before the server is
+  // updated -- add matching parameters in the workflow to actually store them.
+  String meta = String(",\"direction\":\"") + (int)req.direction +
+                "\",\"peak_mag\":\"" + (unsigned)req.peak_mag +
+                "\",\"peak_snr\":\"" + (req.peak_snr / 10.0f) +
+                "\",\"mean_speed\":\"" + (req.mean_speed_x10 / 10.0f) +
+                "\",\"frame_count\":\"" + (unsigned)req.frame_count +
+                "\",\"duration_ms\":\"" + (unsigned long)req.duration_ms + "\"";
+
   if (req.has_photo && req.fb != nullptr) {
     // Stream prologue + base64(framebuffer) + epilogue without ever holding
     // the whole encoded image in RAM.
@@ -525,7 +552,9 @@ void sendUpload(const UploadRequest& req) {
     prologue += camera_id;
     prologue += "\",\"speed_actual\":\"";
     prologue += req.speed_actual;
-    prologue += "\",\"photo\":{\"filename\":\"image.jpg\",\"contents\":\"";
+    prologue += "\"";
+    prologue += meta;
+    prologue += ",\"photo\":{\"filename\":\"image.jpg\",\"contents\":\"";
     String epilogue = "\"}}";
 
     StreamingUploadBody body(prologue, req.fb->buf, req.fb->len, epilogue);
@@ -537,7 +566,9 @@ void sendUpload(const UploadRequest& req) {
     json += camera_id;
     json += "\",\"speed_actual\":\"";
     json += req.speed_actual;
-    json += "\"}";
+    json += "\"";
+    json += meta;
+    json += "}";
     Serial.println("[UPLOAD] speed-only POST");
     httpsResponseCode = https.POST(json);
   }

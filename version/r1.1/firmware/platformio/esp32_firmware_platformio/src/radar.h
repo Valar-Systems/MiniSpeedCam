@@ -5,13 +5,17 @@
  * a tiny ASCII protocol over UART1 (1,000,000 baud, 8N1):
  *   - Send 'm' to request the latest speed in MPH * 10.
  *   - Send 'k' to request the latest speed in KPH * 10.
- *   - The STM32 replies with "<value>,<mag>*<CK>\r\n", where <value> is speed*10,
- *     <mag> is the clamped FFT peak magnitude (a proximity proxy, ~1/r^4; 0 when
- *     no target), and <CK> is the XOR of every ASCII char of the "<value>,<mag>"
- *     payload (digits and the comma) as two hex chars (e.g. "298,1024*18"). We
- *     verify the checksum and reject any reply that doesn't match, so UART
- *     corruption (frequent on this noisy board) can't inject a plausible-but-
- *     wrong speed. We publish <mag> as g_last_peak_mag for the proximity gate.
+ *   - The STM32 replies with "<value>,<mag>,<snr>*<CK>\r\n", where <value> is
+ *     speed*10, <mag> is the clamped FFT peak magnitude (a proximity proxy,
+ *     ~1/r^4; 0 when no target), <snr> is the peak/floor ratio*10 (detection
+ *     quality), and <CK> is the XOR of every ASCII char of the
+ *     "<value>,<mag>,<snr>" payload (digits and the commas) as two hex chars
+ *     (e.g. "298,1024,57*2d"). We verify the checksum and reject any reply that
+ *     doesn't match, so UART corruption (frequent on this noisy board) can't
+ *     inject a plausible-but-wrong speed. We publish <mag> as g_last_peak_mag
+ *     for the proximity gate and <snr> as g_last_peak_snr for per-event
+ *     telemetry. The <snr> field is optional: an older STM32 that sends only
+ *     "<value>,<mag>" still parses (g_last_peak_snr just stays 0).
  *
  * On reset, the STM32 emits a banner string which we drain here so it
  * doesn't pollute the first speed query.
@@ -38,10 +42,11 @@ static const float MAX_PLAUSIBLE_SPEED = 250.0f;
  *             (negative / above MAX_PLAUSIBLE_SPEED) and treated as noise.
  */
 float get_speed(bool kmh) {
-  // Clear the proximity reading up front: every early-return below (no data,
-  // bad checksum, junk speed) then leaves it at 0, so a stale magnitude can
-  // never arm a run. Only a fully valid reply sets it (just before return).
+  // Clear the proximity + SNR readings up front: every early-return below (no
+  // data, bad checksum, junk speed) then leaves them at 0, so a stale value can
+  // never arm a run or pollute telemetry. Only a fully valid reply sets them.
   g_last_peak_mag = 0;
+  g_last_peak_snr = 0;
 
   // Drain any stale or noise bytes sitting in the RX buffer so we parse the
   // fresh reply rather than leftover garbage (UART line noise from WiFi
@@ -102,6 +107,7 @@ float get_speed(bool kmh) {
   }
   if (calc_ck != rx_ck) {
     Serial.printf("[RADAR] checksum fail: \"%s*%s\"\n", value_str, star + 1);
+    g_reject_speed++;  // corrupt reply (telemetry: rejection-rate counter)
     return 0;
   }
 
@@ -115,17 +121,27 @@ float get_speed(bool kmh) {
   // and upload paths entirely (g_last_peak_mag stays 0 from the top of fn).
   if (speed < 0.0f || speed > MAX_PLAUSIBLE_SPEED) {
     Serial.printf("[RADAR] rejected junk reading: %.1f\n", speed);
+    g_reject_speed++;  // implausible reply (telemetry: rejection-rate counter)
     return 0;
   }
 
-  // Reading is good: publish the magnitude for the proximity gate. Older STM32
-  // firmware that omits the ",<mag>" field simply leaves this at 0 (gate off).
+  // Reading is good: publish the magnitude for the proximity gate and the SNR
+  // for telemetry. The reply is "<speed>,<mag>,<snr>"; older STM32 firmware that
+  // omits a trailing field simply leaves that value at 0 (proximity gate off).
   const char* comma = strchr(value_str, ',');
   if (comma != nullptr) {
     long mag = strtol(comma + 1, nullptr, 10);
     if (mag < 0) mag = 0;
     if (mag > 65535) mag = 65535;
     g_last_peak_mag = (uint16_t)mag;
+
+    const char* comma2 = strchr(comma + 1, ',');
+    if (comma2 != nullptr) {
+      long snr = strtol(comma2 + 1, nullptr, 10);
+      if (snr < 0) snr = 0;
+      if (snr > 65535) snr = 65535;
+      g_last_peak_snr = (uint16_t)snr;
+    }
   }
 
   return speed;

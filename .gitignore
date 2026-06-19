@@ -9,6 +9,11 @@ _autosave-*
 
 # --- Editor "Local History" (VS Code Local History extension, etc.) --------
 .history/
+*.code-workspace
 
 # --- PlatformIO build output ----------------------------------------------
 .pio/
+
+# --- Device / serial-monitor logs (PlatformIO device monitor, etc.) --------
+logs/
+*.log
