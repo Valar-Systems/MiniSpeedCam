@@ -10,6 +10,13 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"  // QueueHandle_t for the Core 1 -> Core 0 upload handoff
 
+// ESP32 firmware version. Normally set by the build flag in platformio.ini;
+// this fallback keeps a plain compile working. Reported in the heartbeat and
+// used by the OTA flow to decide whether this board needs updating.
+#ifndef FW_VERSION
+#define FW_VERSION "0.0.0-dev"
+#endif
+
 // --- Live measurement / control state (Core 1 only) ---
 int speed;                   // Latest speed sample read from the STM32 (MPH or KPH per is_kph)
 int min_speed;               // Minimum speed (configured units) that begins a tracking run
@@ -38,6 +45,11 @@ volatile uint16_t g_last_peak_snr;  // FFT peak SNR x10 from the most recent get
 // fast enough to arm a run but failed the proximity gate (distant cross-traffic).
 volatile uint32_t g_reject_speed;
 volatile uint32_t g_reject_proximity;
+
+// STM32 firmware version, queried over UART at boot (the 'v' command). Stays
+// "unknown" on older STM32 firmware that predates 'v'. Reported in the
+// heartbeat so the cloud can tell whether the STM32 needs reflashing.
+String stm_fw_version = "unknown";
 
 // Power-Saver Mode (persisted in NVS). When true the radar loop drops WiFi
 // during the idle/sleep windows to save power; when false the device never
@@ -88,6 +100,24 @@ int ignore_time;             // Absolute millis() at which the blanking window e
 // --- Cloud endpoints (Bubble.io workflow URLs on minispeedcam.com) ---
 const char* server_capture = "https://minispeedcam.com/api/1.1/wf/capture";                    // POST: max speed (+ photo when speeding); send_photo field selects the case
 const char* server_local_ip_address = "https://minispeedcam.com/api/1.1/wf/local_ip_address";  // POST: announce local IP
+const char* server_firmware_check = "https://minispeedcam.com/api/1.1/wf/firmware_check";       // POST {camera,esp_fw,stm_fw} -> latest {esp,stm}_{version,url,md5}
+
+// --- Firmware OTA (manual-approve; triggered from the web-UI buttons) ---
+// An ESPUI button callback (AsyncTCP task) sets ota_request and returns; taskCore0
+// performs the work and writes a human-readable line into ota_status, which
+// taskCore1 mirrors to the web UI. ota_request is an atomic int; ota_status is a
+// fixed buffer (a torn cross-task read garbles one status refresh, never crashes).
+// The discovered URLs/MD5s are touched only on Core 0, so they need no guarding.
+enum { OTA_NONE = 0, OTA_CHECK = 1, OTA_INSTALL_ESP = 2, OTA_INSTALL_STM = 3 };
+volatile int ota_request = OTA_NONE;
+char ota_status[96] = "idle";
+String ota_esp_version, ota_esp_url, ota_esp_md5;
+String ota_stm_version, ota_stm_url, ota_stm_md5;
+bool ota_esp_available = false;
+bool ota_stm_available = false;
+// True while Core 0 is reflashing the STM32 (owns UART1 for the ROM bootloader);
+// taskCore1 pauses radar polling so the two don't fight over the shared UART.
+volatile bool stm_flash_busy = false;
 
 // --- HTTP scratch buffers ---
 String payload;              // Last HTTPS response body (debug)

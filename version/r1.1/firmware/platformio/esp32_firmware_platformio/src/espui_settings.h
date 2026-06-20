@@ -206,6 +206,20 @@ void buttonClearNetworkCall(Control* sender, int type) {
   }
 }
 
+// --- Firmware OTA buttons (manual approve) ----------------------------------
+// These run on the AsyncTCP task, so they ONLY set a flag and return; taskCore0
+// does the slow check/download/flash and reports progress via ota_status (see
+// ota.h). Never do network/flash work inline here -- it would block ESPUI.
+void otaCheckCall(Control* sender, int type) {
+  if (type == B_UP) ota_request = OTA_CHECK;
+}
+void otaInstallEspCall(Control* sender, int type) {
+  if (type == B_UP) ota_request = OTA_INSTALL_ESP;
+}
+void otaInstallStmCall(Control* sender, int type) {
+  if (type == B_UP) ota_request = OTA_INSTALL_STM;
+}
+
 // ----- Status tab live-update handles -----
 // Label controls created in load_espui() and refreshed by
 // updateStatusDisplay(). Like updateSpeedDisplay(), that runs on Core 1 so
@@ -220,6 +234,7 @@ static uint16_t status_ip_label = 0;
 static uint16_t status_last_upload_label = 0;
 static uint16_t status_reset_reason_label = 0;
 static uint16_t status_boot_count_label = 0;
+static uint16_t labelOtaStatus = 0;  // firmware OTA status line (written by Core 0, mirrored here from Core 1)
 
 /**
  * Build the ESPUI control tree and start serving it.
@@ -261,6 +276,13 @@ void load_espui(void) {
   //tab1: Aiming video stream (temporary setup aid; auto-stops after 5 min)
   aimingSwitchId = ESPUI.addControl(ControlType::Switcher, "Aiming Stream (video, 5 min):", "0", ControlColor::Sunflower, tab1, &aimingStreamCall);
   labelStream = ESPUI.addControl(ControlType::Label, "Stream URL", "off", ControlColor::Sunflower, tab1);
+
+  //tab1: Firmware update (manual-approve OTA; buttons set a flag, Core 0 acts)
+  ESPUI.addControl(ControlType::Separator, "Firmware Update", "", ControlColor::None, tab1);
+  labelOtaStatus = ESPUI.addControl(ControlType::Label, "Firmware", String(ota_status), ControlColor::Wetasphalt, tab1);
+  ESPUI.addControl(ControlType::Button, "Check for Updates", "CHECK", ControlColor::Wetasphalt, tab1, &otaCheckCall);
+  ESPUI.addControl(ControlType::Button, "Install ESP32 Update", "UPDATE ESP", ControlColor::Carrot, tab1, &otaInstallEspCall);
+  ESPUI.addControl(ControlType::Button, "Install STM32 Update", "UPDATE STM", ControlColor::Carrot, tab1, &otaInstallStmCall);
 
   //tab2: WiFi
   ESPUI.addControl(ControlType::Separator, "Wifi Status", "", ControlColor::None, tab2);
@@ -357,4 +379,5 @@ void updateStatusDisplay(void) {
   ESPUI.updateLabel(status_rssi_label, connected ? String(WiFi.RSSI()) : String("n/a"));
   ESPUI.updateLabel(status_ip_label, connected ? WiFi.localIP().toString() : String("n/a"));
   ESPUI.updateLabel(status_last_upload_label, String(diagnosticsLastUploadCode()));
+  ESPUI.updateLabel(labelOtaStatus, String(ota_status));  // OTA progress line (set by Core 0)
 }

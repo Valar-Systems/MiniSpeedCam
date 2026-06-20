@@ -1,0 +1,16 @@
+# MiniSpeedCam r1.1 ESP32-S3 (8 MB flash) -- dual-app OTA layout.
+#
+# Two app slots are required for over-the-air updates: the device downloads the
+# new image into the INACTIVE slot and flips to it on reboot (power-fail-safe,
+# with bootloader rollback if it doesn't boot clean). NVS keeps the standard
+# 0x9000 offset so stored WiFi creds + settings survive migrating onto this
+# table; the coredump partition preserves esp_core_dump to-flash crash
+# backtraces. Firmware is ~1.36 MB today, so each 2.81 MB slot has headroom.
+#
+# Name,     Type, SubType,  Offset,    Size,      Flags
+nvs,        data, nvs,      0x9000,    0x5000,
+otadata,    data, ota,      0xe000,    0x2000,
+app0,       app,  ota_0,    0x10000,   0x2D0000,
+app1,       app,  ota_1,    0x2E0000,  0x2D0000,
+spiffs,     data, spiffs,   0x5B0000,  0x230000,
+coredump,   data, coredump, 0x7E0000,  0x20000,

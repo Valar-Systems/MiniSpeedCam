@@ -331,6 +331,8 @@ void sendLocalIP() {
                        "\",\"uptime_s\":\"" + (millis() / 1000) +
                        "\",\"boot_count\":\"" + diagnosticsBootCount() +
                        "\",\"reset_reason\":\"" + diagnosticsResetReason() +
+                       "\",\"esp_fw\":\"" + FW_VERSION +
+                       "\",\"stm_fw\":\"" + stm_fw_version +
                        "\",\"reject_speed\":\"" + (unsigned long)g_reject_speed +
                        "\",\"reject_proximity\":\"" + (unsigned long)g_reject_proximity + "\"}";
 
