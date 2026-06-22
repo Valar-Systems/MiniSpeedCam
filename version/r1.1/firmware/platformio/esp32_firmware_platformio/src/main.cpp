@@ -45,6 +45,7 @@
 
 // --- GPIO assignments (board revision 1.1) ---
 #define STM32_RESET_PIN GPIO_NUM_47  // Drives STM32 NRST low to reset the radar MCU
+#define STM32_BOOT0_PIN GPIO_NUM_14  // Drives STM32 BOOT0 (HIGH = ROM bootloader) for ESP-driven flashing
 #define RX_GPIO 42                   // UART1 RX from STM32 (speed reports)
 #define TX_GPIO 41                   // UART1 TX to STM32 (speed query commands)
 #define ESP_WAKEUP_PIN GPIO_NUM_1    // STM32 pulls HIGH when motion >= ~5mph is detected
@@ -63,6 +64,8 @@ Preferences preferences;  // NVS-backed key/value store for WiFi creds and user 
 #include "camera_stream.h"
 #include "radar.h"
 #include "api.h"
+#include "stm32boot.h"
+#include "ota.h"
 #include "espui_settings.h"
 
 DNSServer dnsServer;  // Captive-DNS used in AP mode so any URL hits the ESPUI portal
@@ -146,6 +149,8 @@ void setup() {
   pinMode(ESP_WAKEUP_PIN, INPUT);
   pinMode(WIFI_RESET_PIN, INPUT_PULLUP);  // Active-low button; enable internal pull-up so the pin idles HIGH (no spurious resets)
   pinMode(STM32_RESET_PIN, OUTPUT);
+  pinMode(STM32_BOOT0_PIN, OUTPUT);
+  digitalWrite(STM32_BOOT0_PIN, LOW);  // BOOT0 low = STM32 boots from flash (normal run)
   pinMode(RADAR_BLANK_PIN, OUTPUT);
   digitalWrite(RADAR_BLANK_PIN, LOW);  // default: not blanking the radar
   pinMode(CAMERA_PWDN_PIN, OUTPUT);  // Set the camera powerdown pin
@@ -198,6 +203,16 @@ void setup() {
   // Reset CDM324
   digitalWrite(STM32_RESET_PIN, LOW);
   issue_cdm324_reset();
+
+  // Read the STM32 firmware version now (before taskCore1 starts polling, so it
+  // can't race get_speed() on the shared UART). Retry a few times in case the
+  // STM32 is mid-FFT when the first query lands; stays "unknown" on old firmware.
+  stm_fw_version = get_stm32_version();
+  for (int i = 0; i < 3 && stm_fw_version == "unknown"; i++) {
+    delay(50);
+    stm_fw_version = get_stm32_version();
+  }
+  Serial.printf("[FW] esp=%s stm=%s\n", FW_VERSION, stm_fw_version.c_str());
   // Connect to WiFi or create Access Point
   connectWifiAP();
   if (WiFi.getMode() == WIFI_STA) {
@@ -313,6 +328,13 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
     // yield replaces get_speed()'s usual loop pacing so we don't busy-spin.
     if (stream_active) {
       vTaskDelay(pdMS_TO_TICKS(20));
+      continue;
+    }
+
+    // While Core 0 is reflashing the STM32 it owns UART1 for the bootloader, so
+    // taskCore1 must not poll the radar over the same UART until it's done.
+    if (stm_flash_busy) {
+      vTaskDelay(pdMS_TO_TICKS(50));
       continue;
     }
 
@@ -637,5 +659,7 @@ void taskCore0(void* parameter) {
       lastHeartbeat = millis();
       sendLocalIP();  // telemetry heartbeat (no-op unless STA + connected)
     }
+
+    otaServiceCore0();  // run any web-UI-requested firmware check/update here (off the AsyncTCP task)
   }
 }

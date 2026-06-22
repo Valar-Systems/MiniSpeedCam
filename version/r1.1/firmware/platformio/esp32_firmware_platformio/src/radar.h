@@ -148,6 +148,39 @@ float get_speed(bool kmh) {
 }
 
 /**
+ * Query the STM32 firmware version via the 'v' command.
+ *
+ * Returns the version string the STM32 reports ("V<ver>\r\n" -> "<ver>"), or
+ * "unknown" if it doesn't answer within the window (older STM32 firmware that
+ * predates 'v' simply ignores it). Used by the OTA flow to decide whether the
+ * STM32 needs reflashing. Call only at boot, before taskCore1 starts polling,
+ * so it can't race get_speed() on the shared UART.
+ */
+String get_stm32_version() {
+  while (Serial1.available() > 0) Serial1.read();  // drain stale bytes
+  Serial1.print('v');
+
+  char line[24];
+  int idx = 0;
+  bool got_line = false;
+  unsigned long start = millis();
+  while ((millis() - start) < 150) {
+    if (Serial1.available() > 0) {
+      char c = (char)Serial1.read();
+      if (c == '\n') { got_line = true; break; }
+      if (c != '\r' && idx < (int)sizeof(line) - 1) line[idx++] = c;
+    }
+  }
+  line[idx] = '\0';
+
+  // Expect "V<version>"; anything else (noise, a stray speed reply) -> unknown.
+  if (got_line && line[0] == 'V' && idx > 1) {
+    return String(line + 1);
+  }
+  return String("unknown");
+}
+
+/**
  * Reset the STM32 and consume its boot banner.
  *
  * Drives STM32_RESET_PIN low for 20ms, then reads bytes off UART1 until

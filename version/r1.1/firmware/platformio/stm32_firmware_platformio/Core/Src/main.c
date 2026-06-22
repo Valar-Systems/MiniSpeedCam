@@ -24,6 +24,11 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
+// Firmware version reported to the ESP32 over UART on the 'v' command. The
+// ESP-driven OTA flow reads this to decide whether this MCU needs reflashing.
+// Bump on every STM32 firmware release.
+#define STM_FW_VERSION "1.0.1"
+
 // Do we skip data analysis after updating display?
 //#define SKIP_ADC_DATA_AFTER_DISPLAY
 // After how many FFTs do we update display
@@ -344,6 +349,11 @@ int main(void) {
 			} else if (uart_input == 'd') {
 				/* Toggle the readable diagnostic dump (see above). */
 				diag_enabled = (diag_enabled == FALSE) ? TRUE : FALSE;
+			} else if (uart_input == 'v') {
+				/* Report firmware version to the ESP32 (OTA version check). The
+				 * "V<ver>" prefix keeps it distinct from a speed reply, which is
+				 * "<n>,<n>,<n>*<CK>". */
+				printf("V%s\r\n", STM_FW_VERSION);
 			}
 		}
 
