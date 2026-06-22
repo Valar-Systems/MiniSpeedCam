@@ -637,7 +637,7 @@ void taskCore0(void* parameter) {
   // counters), so it must be re-sent on an interval -- the once-at-boot call in
   // setup() reports those runtime fields while they're still ~0. It self-guards
   // on STA + connected, so it's a no-op in AP/config mode or while asleep.
-  const unsigned long HEARTBEAT_INTERVAL_MS = 60UL * 1000UL;
+  const unsigned long HEARTBEAT_INTERVAL_MS = 10UL * 60UL * 1000UL;  // 10 min: fewer WiFi-TX bursts -> less battery drain (and radar interference)
   unsigned long lastHeartbeat = millis();
 
   while (1) {
