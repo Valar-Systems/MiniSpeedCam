@@ -476,8 +476,18 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
         uint16_t sample_count = (speed > 0) ? 1 : 0;             // valid frames in the run
         uint16_t peak_snr = g_last_peak_snr;                     // strongest SNR seen
         int direction = 0;                                       // 0 unk, 1 approaching, 2 receding
-        uint16_t mag_first = g_last_peak_mag;                    // first/last valid mag, for the
-        uint16_t mag_last = g_last_peak_mag;                     //   no-proximity direction fallback
+        // Echo-energy centroid across the run: Sigma(echo_index * mag) / Sigma(mag)
+        // over every valid echo locates where the strongest reflections sit in
+        // time. Magnitude rises for an oncoming car and falls for a receding one,
+        // so energy weighted toward the END of the run => still closing
+        // (approaching), toward the START => already leaving (receding), centered
+        // => symmetric pass (ambiguous). Uses all samples, so a single noisy
+        // reading can't flip it the way a first-vs-last compare could. Drives the
+        // direction fallback below and the mag_trend telemetry field. Seeded with
+        // the arming echo at index 0.
+        uint64_t mag_idx_sum = 0;                                // Sigma(echo_index * mag)
+        uint32_t mag_wt_sum  = g_last_peak_mag;                  // Sigma(mag)
+        uint16_t echo_n      = (g_last_peak_mag > 0) ? 1 : 0;    // valid echoes counted (mag > 0)
 
         // --- Direction-aware photo timing (proximity, two thresholds) -------
         // With the unit aimed down the road the echo magnitude (g_last_peak_mag,
@@ -529,9 +539,10 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
           } else {
             if (g_last_peak_mag > peak_mag) peak_mag = g_last_peak_mag;
             if (g_last_peak_snr > peak_snr) peak_snr = g_last_peak_snr;
-            if (g_last_peak_mag > 0) {       // first/last real echo, for the trend fallback
-              if (mag_first == 0) mag_first = g_last_peak_mag;
-              mag_last = g_last_peak_mag;
+            if (g_last_peak_mag > 0) {       // valid echo: fold into the energy centroid
+              mag_idx_sum += (uint64_t)echo_n * g_last_peak_mag;  // index = current echo_n
+              mag_wt_sum  += g_last_peak_mag;
+              echo_n++;
             }
             const bool now_above_front = (thr_front > 0) && ((int)g_last_peak_mag >= thr_front);
             const bool now_above_rear  = (thr_rear  > 0) && ((int)g_last_peak_mag >= thr_rear);
@@ -577,13 +588,24 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
           delay(100);
         }
 
-        // Direction fallback when proximity timing isn't configured (no crossing
-        // was observed): infer from the magnitude trend across the run -- an
-        // approaching car's echo rises, a receding car's falls. Only commit when
-        // the trend is pronounced (>=30%), else leave it unknown rather than guess.
-        if (direction == 0 && mag_first > 0 && mag_last > 0) {
-          if (mag_last >= (uint32_t)mag_first * 13 / 10) direction = 1;       // rose -> approaching
-          else if (mag_last <= (uint32_t)mag_first * 7 / 10) direction = 2;   // fell -> receding
+        // Echo-energy centroid -> normalized trend (0-100, 50 = symmetric pass).
+        // Computed every run for telemetry; also serves as the direction fallback
+        // when proximity timing isn't configured and no crossing was observed.
+        // Energy weighted toward the END (>0.60) means the echo was still rising
+        // -> approaching; toward the START (<0.40) means it was falling ->
+        // receding. The 0.40-0.60 dead zone (a symmetric pass) is genuinely
+        // ambiguous from magnitude alone, so leave it unknown rather than guess.
+        // Need >=3 echoes for the centroid to mean anything.
+        uint8_t mag_trend = 255;  // 0-100 normalized centroid; 255 = too few echoes
+        if (echo_n >= 3 && mag_wt_sum > 0) {
+          double pos  = (double)mag_idx_sum / (double)mag_wt_sum;  // 0 .. echo_n-1
+          double frac = pos / (double)(echo_n - 1);                // 0 .. 1
+          if (frac < 0.0) frac = 0.0; else if (frac > 1.0) frac = 1.0;
+          mag_trend = (uint8_t)(frac * 100.0 + 0.5);
+          if (direction == 0) {
+            if (frac >= 0.60) direction = 1;       // energy late  -> rising  -> approaching
+            else if (frac <= 0.40) direction = 2;  // energy early -> falling -> receding
+          }
         }
 
         // The run has ended, so maxSpeed is final. Hand it to Core 0 as a
@@ -594,16 +616,18 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
         req.has_photo = (fb != nullptr);
         req.fb = fb;
         req.direction = (uint8_t)direction;
+        req.mag_trend = mag_trend;
         req.peak_mag = peak_mag;
         req.peak_snr = peak_snr;
         req.frame_count = sample_count;
         req.duration_ms = millis() - run_start;
         req.mean_speed_x10 =
             sample_count ? (uint16_t)((speed_sum * 10) / sample_count) : 0;
-        Serial.printf("[RUN] end: maxSpeed=%d dir=%u meanx10=%u frames=%u dur=%lums peak_mag=%u peak_snr=%u has_photo=%d -> enqueue\n",
-                      maxSpeed, (unsigned)req.direction, (unsigned)req.mean_speed_x10,
-                      (unsigned)req.frame_count, (unsigned long)req.duration_ms,
-                      (unsigned)req.peak_mag, (unsigned)req.peak_snr, (int)req.has_photo);
+        Serial.printf("[RUN] end: maxSpeed=%d dir=%u trend=%u meanx10=%u frames=%u dur=%lums peak_mag=%u peak_snr=%u has_photo=%d -> enqueue\n",
+                      maxSpeed, (unsigned)req.direction, (unsigned)req.mag_trend,
+                      (unsigned)req.mean_speed_x10, (unsigned)req.frame_count,
+                      (unsigned long)req.duration_ms, (unsigned)req.peak_mag,
+                      (unsigned)req.peak_snr, (int)req.has_photo);
         if (xQueueSend(uploadQueue, &req, 0) != pdTRUE) {
           Serial.println("[RUN] upload queue FULL, dropping event");
           if (fb != nullptr) {

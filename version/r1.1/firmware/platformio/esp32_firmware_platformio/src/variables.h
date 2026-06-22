@@ -85,6 +85,7 @@ struct UploadRequest {
   // --- Per-event telemetry (forwarded to the cloud by sendUpload) ---
   // Captured over the whole pass so each reading carries its own context.
   uint8_t  direction;      // 0 = unknown, 1 = approaching (front), 2 = receding (rear)
+  uint8_t  mag_trend;      // Echo-energy centroid across the run, 0-100 (50 = symmetric pass; >50 approaching, <50 receding; 255 = too few echoes to compute). Direction falls back to this when proximity thresholds are off.
   uint16_t peak_mag;       // Strongest FFT peak magnitude in the run (closest approach)
   uint16_t peak_snr;       // Strongest FFT peak SNR x10 in the run (detection confidence)
   uint16_t mean_speed_x10; // Mean of the valid speed samples x10 (steady vs braking shape)

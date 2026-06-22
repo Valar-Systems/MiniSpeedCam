@@ -673,6 +673,7 @@ void sendUpload(const UploadRequest& req) {
   // parameter it hasn't defined, so sending them is safe before the server is
   // updated -- add matching parameters in the workflow to actually store them.
   String meta = String(",\"direction\":\"") + (int)req.direction +
+                "\",\"mag_trend\":\"" + (unsigned)req.mag_trend +
                 "\",\"peak_mag\":\"" + (unsigned)req.peak_mag +
                 "\",\"peak_snr\":\"" + (req.peak_snr / 10.0f) +
                 "\",\"mean_speed\":\"" + (req.mean_speed_x10 / 10.0f) +
