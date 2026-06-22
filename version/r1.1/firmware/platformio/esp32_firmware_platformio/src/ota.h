@@ -38,7 +38,7 @@ static void otaSetStatus(const char* fmt, ...) {
 
 // Ask the cloud what the latest firmware is for this device's two MCUs.
 void otaCheck() {
-  if (camera_id == "NOT_SET" || camera_id.isEmpty()) { otaSetStatus("check: set Camera ID first"); return; }
+  if (device_token.isEmpty()) { otaSetStatus("check: device identity not ready"); return; }
   if (WiFi.getMode() != WIFI_STA || WiFi.status() != WL_CONNECTED) { otaSetStatus("check: WiFi not connected"); return; }
 
   otaSetStatus("checking for updates...");
@@ -49,13 +49,14 @@ void otaCheck() {
   https.begin(client, server_firmware_check);
   https.addHeader("Authorization", "Bearer " API_BEARER_TOKEN);
   https.addHeader("Content-Type", "application/json");
-  String body = String("{\"camera\":\"") + camera_id +
+  String body = String("{\"device_token\":\"") + device_token +
                 "\",\"esp_fw\":\"" + FW_VERSION +
                 "\",\"stm_fw\":\"" + stm_fw_version + "\"}";
   int code = https.POST(body);
   if (code != 200) { otaSetStatus("check failed: HTTP %d", code); https.end(); return; }
   String resp = https.getString();
   https.end();
+  Serial.printf("[OTA] firmware_check <- %s\n", resp.c_str());  // raw body: spot a server-side shape/field mismatch fast
 
   JsonDocument doc;
   if (deserializeJson(doc, resp)) { otaSetStatus("check: bad response"); return; }
@@ -70,17 +71,25 @@ void otaCheck() {
   ota_stm_url     = (const char*)(r["stm_url"]     | "");
   ota_stm_md5     = (const char*)(r["stm_md5"]     | "");
 
-  // "Available" = the cloud names a non-empty version different from ours and
-  // gives a URL to fetch. Any difference counts (manual approve decides), so a
-  // deliberate downgrade is allowed too.
-  ota_esp_available = ota_esp_version.length() && ota_esp_url.length() && ota_esp_version != String(FW_VERSION);
-  ota_stm_available = ota_stm_version.length() && ota_stm_url.length() && ota_stm_version != stm_fw_version;
+  // "Available" = the cloud names a non-empty version different from ours AND
+  // gives a URL to fetch it. Any version difference counts (manual approve
+  // decides), so a deliberate downgrade is allowed too.
+  //
+  // Keep the "different version offered" test separate from the URL test so the
+  // two failure modes are distinguishable: a newer version with an EMPTY url is
+  // a server-side misconfig (the firmware_check workflow returned a version but
+  // no esp_url/stm_url), and reporting a bare "ok" there hides the real problem.
+  // Surface it as "no URL" and show the offered version, not the local one.
+  bool esp_diff = ota_esp_version.length() && ota_esp_version != String(FW_VERSION);
+  bool stm_diff = ota_stm_version.length() && ota_stm_version != stm_fw_version;
+  ota_esp_available = esp_diff && ota_esp_url.length();
+  ota_stm_available = stm_diff && ota_stm_url.length();
 
+  const char* esp_state = ota_esp_available ? " UPDATE" : (esp_diff ? " no URL" : " ok");
+  const char* stm_state = ota_stm_available ? " UPDATE" : (stm_diff ? " no URL" : " ok");
   otaSetStatus("ESP %s%s | STM %s%s",
-    ota_esp_available ? ota_esp_version.c_str() : FW_VERSION,
-    ota_esp_available ? " UPDATE" : " ok",
-    ota_stm_available ? ota_stm_version.c_str() : stm_fw_version.c_str(),
-    ota_stm_available ? " UPDATE" : " ok");
+    esp_diff ? ota_esp_version.c_str() : FW_VERSION, esp_state,
+    stm_diff ? ota_stm_version.c_str() : stm_fw_version.c_str(), stm_state);
 }
 
 // Download the ESP32 image into the inactive slot, verify, and reboot into it.

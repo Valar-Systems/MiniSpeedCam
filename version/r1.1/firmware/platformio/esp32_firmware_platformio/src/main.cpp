@@ -185,7 +185,7 @@ void setup() {
   diagnosticsLogBoot();  // record reset reason + bump persisted boot counter for the Status tab
   ssid = preferences.getString("ssid", "NOT_SET");
   password = preferences.getString("pass", "NOT_SET");
-  camera_id = preferences.getString("camera_id", "NOT_SET");  // Create an account and camera at tachtracker.com
+  loadOrCreateIdentity();  // device_token + claim_code: minted once on first boot, reused forever
   min_speed = preferences.getInt("min_speed", 3);             // The minimum speed (MPH) that the tracker should track any vehicle and upload data
   photo_speed = preferences.getInt("photo_speed", 10);        // Cars speed (MPH) when photo should be taken
   min_signal = preferences.getInt("min_signal", 0);           // Min radar echo strength to arm a run (0 = off; proximity gate, see variables.h)
@@ -421,7 +421,9 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
       // In AP config mode (ssid == "NOT_SET") WiFi.status() is never
       // WL_CONNECTED, so without this guard we'd flag a reconnect every loop
       // and connectWifi() would tear the soft-AP down.
-      if (ssid != "NOT_SET" && !ssid.isEmpty() && WiFi.status() != WL_CONNECTED) {
+      // ...but not while we're in config-AP fallback: chasing an unreachable
+      // STA there would tear the portal down (handled in connectWifi() too).
+      if (!ap_fallback_mode && ssid != "NOT_SET" && !ssid.isEmpty() && WiFi.status() != WL_CONNECTED) {
         connect_wifi = true;
       }
       // Power on camera here? Need to check if it's powered down first
@@ -635,7 +637,7 @@ void taskCore0(void* parameter) {
   // counters), so it must be re-sent on an interval -- the once-at-boot call in
   // setup() reports those runtime fields while they're still ~0. It self-guards
   // on STA + connected, so it's a no-op in AP/config mode or while asleep.
-  const unsigned long HEARTBEAT_INTERVAL_MS = 60UL * 1000UL;
+  const unsigned long HEARTBEAT_INTERVAL_MS = 10UL * 60UL * 1000UL;  // 10 min: fewer WiFi-TX bursts -> less battery drain (and radar interference)
   unsigned long lastHeartbeat = millis();
 
   while (1) {
@@ -660,6 +662,7 @@ void taskCore0(void* parameter) {
       sendLocalIP();  // telemetry heartbeat (no-op unless STA + connected)
     }
 
+    serviceRegistration();  // trust-on-first-use device registration (retries w/ backoff until 200)
     otaServiceCore0();  // run any web-UI-requested firmware check/update here (off the AsyncTCP task)
   }
 }

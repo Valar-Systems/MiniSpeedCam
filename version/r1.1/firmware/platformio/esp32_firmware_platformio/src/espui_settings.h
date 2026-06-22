@@ -153,12 +153,6 @@ void photoSignalRearCall(Control* sender, int type) {
   preferences.putInt("ps_rear", photo_signal_rear);
 }
 
-// Camera ID is read directly off the ESPUI control inside
-// buttonSaveNetworkCall(), so per-keystroke handling is unnecessary.
-void textCameraIdCall(Control* sender, int type) {
-// Leave blank
-}
-
 // SSID is read on Save (see buttonSaveNetworkCall); no live update needed.
 void textNetworkCall(Control* sender, int type) {
   //    ssid = sender->value;
@@ -173,19 +167,18 @@ void textPasswordCall(Control* sender, int type) {
 }
 
 /**
- * Save Settings button: snapshots SSID/password/camera_id from the
- * ESPUI text inputs into NVS, then reboots so the new credentials take
- * effect via connectWifiAP() at startup.
+ * Save Settings button: snapshots SSID/password from the ESPUI text inputs into
+ * NVS, then reboots so the new credentials take effect via connectWifiAP() at
+ * startup. Device identity (device_token / claim_code) is generated on first
+ * boot and persisted separately, so it is untouched here.
  */
 void buttonSaveNetworkCall(Control* sender, int type) {
   if (type == B_UP) {
     Serial.println("Button Pressed");
     String ssid = ESPUI.getControl(wifi_ssid_text)->value;
     String pass = ESPUI.getControl(wifi_pass_text)->value;
-    String camera_id = ESPUI.getControl(camera_id_text)->value;
     preferences.putString("ssid", ssid);
     preferences.putString("pass", pass);
-    preferences.putString("camera_id", camera_id);
     ESP.restart();
   }
 }
@@ -235,6 +228,7 @@ static uint16_t status_last_upload_label = 0;
 static uint16_t status_reset_reason_label = 0;
 static uint16_t status_boot_count_label = 0;
 static uint16_t labelOtaStatus = 0;  // firmware OTA status line (written by Core 0, mirrored here from Core 1)
+static uint16_t claim_code_label = 0; // shows the claim code until the device is claimed, then "Linked"
 
 /**
  * Build the ESPUI control tree and start serving it.
@@ -264,6 +258,12 @@ void load_espui(void) {
 
   //tab1: Device settings
   labelSpeed = ESPUI.addControl(ControlType::Label, "Current Speed", "—", ControlColor::Turquoise, tab1);
+
+  //tab1: Claim code -- the user enters this in the MiniSpeedCam web app to link
+  // the device to their account. Shown until the first capture is accepted, then
+  // updateStatusDisplay() swaps it to "Linked to your account".
+  claim_code_label = ESPUI.addControl(ControlType::Label, "Claim Code (enter in the app)",
+      device_claimed ? String("Linked to your account") : claim_code, ControlColor::Sunflower, tab1);
   ESPUI.addControl(ControlType::Switcher, "MPH/KPH:", String(is_kph), ControlColor::Alizarin, tab1, &speedUnitsCall);
   ESPUI.addControl(ControlType::Switcher, "Power-Saver Mode (drop WiFi when idle):", String(power_saver), ControlColor::Alizarin, tab1, &powerSaverCall);
   ESPUI.addControl(ControlType::Number, "Minimum Speed:", String(min_speed), ControlColor::Alizarin, tab1, &minSpeedCall);
@@ -294,7 +294,6 @@ void load_espui(void) {
   ESPUI.addControl(ControlType::Separator, "Set Wifi", "", ControlColor::None, tab2);
   wifi_ssid_text = ESPUI.addControl(ControlType::Text, "Network", String(ssid), ControlColor::Emerald, tab2, &textNetworkCall); //Text: Network
   wifi_pass_text = ESPUI.addControl(ControlType::Text, "Password", String(password), ControlColor::Emerald, tab2, &textPasswordCall); //Text: Password
-  camera_id_text = ESPUI.addControl(ControlType::Text, "Camera ID:", String(camera_id), ControlColor::Peterriver, tab2, &textCameraIdCall); //Text: Camera ID
 
   //Button: Save
   ESPUI.addControl(ControlType::Button, "Save Settings", "SAVE", ControlColor::Emerald, tab2, &buttonSaveNetworkCall);
@@ -380,4 +379,6 @@ void updateStatusDisplay(void) {
   ESPUI.updateLabel(status_ip_label, connected ? WiFi.localIP().toString() : String("n/a"));
   ESPUI.updateLabel(status_last_upload_label, String(diagnosticsLastUploadCode()));
   ESPUI.updateLabel(labelOtaStatus, String(ota_status));  // OTA progress line (set by Core 0)
+  // device_claimed is flipped by sendUpload() on Core 0; mirror it to the portal.
+  ESPUI.updateLabel(claim_code_label, device_claimed ? String("Linked to your account") : claim_code);
 }
