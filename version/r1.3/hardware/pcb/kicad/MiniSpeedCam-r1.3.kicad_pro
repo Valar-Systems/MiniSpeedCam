@@ -491,7 +491,7 @@
     "pinned_symbol_libs": []
   },
   "meta": {
-    "filename": "MiniSpeedCam-1.2.kicad_pro",
+    "filename": "MiniSpeedCam-r1.3.kicad_pro",
     "version": 3
   },
   "net_settings": {
@@ -583,7 +583,7 @@
       "gencad": "",
       "idf": "",
       "netlist": "",
-      "plot": "C:/Github/MiniSpeedCam/version/r1.2/hardware/pcb/kicad/Fabrication/PCB/",
+      "plot": "C:/Github/radar-camera/hardware/kicad/production/",
       "pos_files": "C:/Github/radar-camera/hardware/kicad/",
       "specctra_dsn": "",
       "step": "../../../../../../../Users/DanielFrenkel/Downloads/radar_camera_V4.step",
@@ -598,7 +598,7 @@
       "method": 0,
       "sort_order": 0
     },
-    "bom_export_filename": "C:\\Github\\MiniSpeedCam\\version\\r1.2\\hardware\\pcb\\kicad\\Fabrication\\MiniSpeedCam-1.2.csv",
+    "bom_export_filename": "lightspeed_r1_BOM.csv",
     "bom_fmt_presets": [],
     "bom_fmt_settings": {
       "field_delimiter": ",",
@@ -663,8 +663,14 @@
         },
         {
           "group_by": false,
-          "label": "Imax",
+          "label": "IMax",
           "name": "IMax",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "Imax",
+          "name": "Imax",
           "show": false
         },
         {
@@ -881,18 +887,18 @@
     "subpart_id_separator": 0,
     "top_level_sheets": [
       {
-        "filename": "MiniSpeedCam-1.2.kicad_sch",
-        "name": "MiniSpeedCam-1.2",
+        "filename": "MiniSpeedCam-r1.3.kicad_sch",
+        "name": "MiniSpeedCam-r1.3",
         "uuid": "947b52da-b0af-4e24-a217-672042c043ca"
       }
     ],
-    "used_designators": "Q1-2,R19-21,R23,R30,D8-10,#PWR3,#PWR35,#PWR50,#PWR55,#PWR57-59,#PWR78,#PWR85,#PWR90,#PWR93,C3,C25,SW9,U3,USB3",
+    "used_designators": "TP1,#PWR32,#PWR106,J2,R6,R14,DC1",
     "variants": []
   },
   "sheets": [
     [
       "947b52da-b0af-4e24-a217-672042c043ca",
-      "MiniSpeedCam-1.2"
+      "MiniSpeedCam-r1.3"
     ]
   ],
   "text_variables": {},
