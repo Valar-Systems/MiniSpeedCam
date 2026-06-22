@@ -226,6 +226,7 @@ void connectWifiAP() {
   }
 
   if (WiFi.status() == WL_CONNECTED) {
+    ap_fallback_mode = false;  // STA is up; reconnect-on-radar-motion is safe
     Serial.println(WiFi.localIP());
     Serial.println("Wifi started");
 
@@ -239,6 +240,10 @@ void connectWifiAP() {
 
   } else {
     Serial.println("\nCreating access point...");
+    // Boot STA failed (or no creds): the soft-AP is now the only way in, so mark
+    // fallback mode. connectWifi() and the taskCore1 reconnect trigger both honor
+    // this and leave the portal up instead of tearing it down to chase STA.
+    ap_fallback_mode = true;
 
     // Cleanly tear down the failed STA attempt before bringing the radio up
     // as an AP. Going through WIFI_OFF first avoids leaving the driver in the
@@ -291,6 +296,14 @@ void connectWifi() {
   // connectWifiAP() brought up (and that the user needs to enter creds).
   if (ssid == "NOT_SET" || ssid.isEmpty()) {
     Serial.println("No WiFi credentials stored; staying in AP mode");
+    return;
+  }
+
+  // Boot STA failed and we're serving the config portal over the soft-AP. Don't
+  // switch the radio to STA to chase a network that just proved unreachable -- it
+  // would drop the portal and strand the device. A reboot retries STA cleanly.
+  if (ap_fallback_mode) {
+    Serial.println("AP config-fallback mode; keeping the portal up (reboot to retry STA)");
     return;
   }
 

@@ -60,6 +60,13 @@ volatile bool power_saver;
 
 volatile bool connect_wifi;  // Core 1 -> Core 0: please attempt a WiFi (re)connect
 
+// True once boot STA association failed and we fell back to the config soft-AP.
+// While set, radar motion must NOT trigger an STA reconnect: connectWifi() would
+// tear the portal down chasing an unreachable network, leaving the device with
+// neither STA nor AP (the "lost the portal" trap). Cleared on a successful STA
+// connect at boot; a reboot re-attempts STA. Set in connectWifiAP().
+volatile bool ap_fallback_mode = false;
+
 // --- Aiming video stream (temporary setup/mounting tool) ---
 // Desired state is toggled from the ESPUI switcher (and cleared by the auto-off
 // timeout); taskCore1's streamService() reconciles it against the real server.

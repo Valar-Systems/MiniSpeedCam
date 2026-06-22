@@ -421,7 +421,9 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
       // In AP config mode (ssid == "NOT_SET") WiFi.status() is never
       // WL_CONNECTED, so without this guard we'd flag a reconnect every loop
       // and connectWifi() would tear the soft-AP down.
-      if (ssid != "NOT_SET" && !ssid.isEmpty() && WiFi.status() != WL_CONNECTED) {
+      // ...but not while we're in config-AP fallback: chasing an unreachable
+      // STA there would tear the portal down (handled in connectWifi() too).
+      if (!ap_fallback_mode && ssid != "NOT_SET" && !ssid.isEmpty() && WiFi.status() != WL_CONNECTED) {
         connect_wifi = true;
       }
       // Power on camera here? Need to check if it's powered down first
