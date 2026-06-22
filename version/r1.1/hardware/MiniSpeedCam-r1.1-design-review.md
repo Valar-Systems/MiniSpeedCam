@@ -45,12 +45,19 @@ DFM hygiene items.
 ## 3. Priority Finding — Radar Front-End Shares the Digital Supply & Ground
 
 ```
-USB 5V (VUSB) -> U5 B0505S (isolated DC-DC) -> +Vo -> FB1 ferrite -> CDM324 V+   [GOOD: dedicated, filtered diode rail]
-                       |
-                       +- U5.1 (-Vin)=GND  and  U5.3 (0V, secondary gnd)=GND     [isolation collapsed to common ground]
+RADAR SUPPLY  [GOOD: dedicated, filtered diode rail]
+  USB 5V (VUSB)
+    -> U5 B0505S (isolated DC-DC) -> +Vo
+       -> FB1 ferrite -> CDM324 V+
 
-CDM324 IF out -> C11/R12 (AC couple) -> U4 LMP7731 (gain) -> U12 MAX9814 (AGC) -> ADC
-                                         U4.V+ = 3V3              U12.VDD = 3V3   [uV signal amplified on the noisy digital rail]
+  U5.1 (-Vin) = GND   and   U5.3 (0V, secondary gnd) = GND
+  [isolation collapsed to a common ground]
+
+RADAR SIGNAL  [uV signal amplified on the noisy digital rail]
+  CDM324 IF out -> C11/R12 (AC couple)
+    -> U4 LMP7731 (gain)   [U4.V+   = 3V3]
+    -> U12 MAX9814 (AGC)   [U12.VDD = 3V3]
+    -> ADC
 ```
 
 | Observation | Evidence (netlist) | Severity |
