@@ -6,6 +6,8 @@
 fp-info-cache
 _autosave-*
 *.tmp
+# Per-user project-local settings (window/panel state) — not shared.
+*.kicad_prl
 
 # --- Editor "Local History" (VS Code Local History extension, etc.) --------
 .history/
