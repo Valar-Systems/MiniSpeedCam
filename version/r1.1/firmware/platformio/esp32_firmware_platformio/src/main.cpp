@@ -185,7 +185,7 @@ void setup() {
   diagnosticsLogBoot();  // record reset reason + bump persisted boot counter for the Status tab
   ssid = preferences.getString("ssid", "NOT_SET");
   password = preferences.getString("pass", "NOT_SET");
-  camera_id = preferences.getString("camera_id", "NOT_SET");  // Create an account and camera at tachtracker.com
+  loadOrCreateIdentity();  // device_token + claim_code: minted once on first boot, reused forever
   min_speed = preferences.getInt("min_speed", 3);             // The minimum speed (MPH) that the tracker should track any vehicle and upload data
   photo_speed = preferences.getInt("photo_speed", 10);        // Cars speed (MPH) when photo should be taken
   min_signal = preferences.getInt("min_signal", 0);           // Min radar echo strength to arm a run (0 = off; proximity gate, see variables.h)
@@ -660,6 +660,7 @@ void taskCore0(void* parameter) {
       sendLocalIP();  // telemetry heartbeat (no-op unless STA + connected)
     }
 
+    serviceRegistration();  // trust-on-first-use device registration (retries w/ backoff until 200)
     otaServiceCore0();  // run any web-UI-requested firmware check/update here (off the AsyncTCP task)
   }
 }

@@ -38,7 +38,7 @@ static void otaSetStatus(const char* fmt, ...) {
 
 // Ask the cloud what the latest firmware is for this device's two MCUs.
 void otaCheck() {
-  if (camera_id == "NOT_SET" || camera_id.isEmpty()) { otaSetStatus("check: set Camera ID first"); return; }
+  if (device_token.isEmpty()) { otaSetStatus("check: device identity not ready"); return; }
   if (WiFi.getMode() != WIFI_STA || WiFi.status() != WL_CONNECTED) { otaSetStatus("check: WiFi not connected"); return; }
 
   otaSetStatus("checking for updates...");
@@ -49,7 +49,7 @@ void otaCheck() {
   https.begin(client, server_firmware_check);
   https.addHeader("Authorization", "Bearer " API_BEARER_TOKEN);
   https.addHeader("Content-Type", "application/json");
-  String body = String("{\"camera\":\"") + camera_id +
+  String body = String("{\"device_token\":\"") + device_token +
                 "\",\"esp_fw\":\"" + FW_VERSION +
                 "\",\"stm_fw\":\"" + stm_fw_version + "\"}";
   int code = https.POST(body);

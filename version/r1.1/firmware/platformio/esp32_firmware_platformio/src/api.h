@@ -20,6 +20,7 @@
  */
 
 #include "config.h"
+#include <esp_random.h>  // esp_random(): hardware RNG used to mint the per-device identity
 
 #define HOSTNAME "MiniSpeedCam"  // base name; deviceHostname() appends a per-unit MAC suffix
 
@@ -80,6 +81,114 @@ static void applyTlsPolicy(WiFiClientSecure& client) {
     client.setCACert(kCaRootCert);
   } else {
     client.setInsecure();
+  }
+}
+
+// --- Per-device identity ------------------------------------------------------
+// The same firmware image flashes to every unit; each device mints its own
+// identity at runtime (no per-unit build). loadOrCreateIdentity() generates the
+// secrets on first boot ONLY and persists them in NVS; registerDevice() does the
+// trust-on-first-use handshake with the cloud.
+
+// 32 hex chars (128 bits) straight from the hardware RNG.
+static String makeDeviceToken() {
+  char buf[33];
+  for (int i = 0; i < 4; i++) snprintf(buf + i * 8, 9, "%08x", (unsigned)esp_random());
+  buf[32] = '\0';
+  return String(buf);
+}
+
+// 6-char human claim code from an unambiguous uppercase alphabet (no 0/O/1/I).
+// The alphabet is exactly 32 symbols, so `& 31` selects one without modulo bias.
+static String makeClaimCode() {
+  static const char alphabet[] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";  // 32 symbols
+  char buf[7];
+  for (int i = 0; i < 6; i++) buf[i] = alphabet[esp_random() & 31];
+  buf[6] = '\0';
+  return String(buf);
+}
+
+// Canonical 12-hex factory MAC, from the same eFuse source as deviceHostname().
+static String deviceMacString() {
+  uint64_t mac = ESP.getEfuseMac();  // 48-bit factory MAC, byte 0 in the LSB
+  char buf[13];
+  snprintf(buf, sizeof(buf), "%02X%02X%02X%02X%02X%02X",
+           (uint8_t)(mac >> 40), (uint8_t)(mac >> 32), (uint8_t)(mac >> 24),
+           (uint8_t)(mac >> 16), (uint8_t)(mac >> 8),  (uint8_t)mac);
+  return String(buf);
+}
+
+// Load device_token / claim_code / claimed from NVS, generating the two secrets
+// on first boot only. Never regenerates an existing token (that would orphan the
+// device's cloud record). Call once in setup() AFTER preferences.begin().
+void loadOrCreateIdentity() {
+  device_token = preferences.getString("dev_token", "");
+  if (device_token.length() != 32) {
+    device_token = makeDeviceToken();
+    preferences.putString("dev_token", device_token);
+    Serial.println("[ID] generated new device_token (first boot)");
+  }
+  claim_code = preferences.getString("claim_code", "");
+  if (claim_code.length() != 6) {
+    claim_code = makeClaimCode();
+    preferences.putString("claim_code", claim_code);
+    Serial.println("[ID] generated new claim_code (first boot)");
+  }
+  device_claimed = preferences.getBool("claimed", false);
+
+  // The claim code is meant to be read off the device, so print it prominently.
+  // The token is a secret, so only echo a short masked prefix for support/debug.
+  Serial.println("==================================================");
+  Serial.printf ("  CLAIM CODE : %s\n", claim_code.c_str());
+  Serial.printf ("  device id  : %s   token: %.8s...   %s\n",
+                 deviceMacString().c_str(), device_token.c_str(),
+                 device_claimed ? "[claimed]" : "[unclaimed]");
+  Serial.println("  Enter the claim code in the MiniSpeedCam web app to link this device.");
+  Serial.println("==================================================");
+}
+
+// POST {mac, device_token, claim_code} to register_device. Trust-on-first-use:
+// the first call for a MAC creates the device record; later calls are no-ops and
+// NEVER overwrite the stored token. Idempotent, so it is safe on every boot.
+// Returns true on any HTTP 200.
+bool registerDevice() {
+  if (WiFi.getMode() != WIFI_STA || WiFi.status() != WL_CONNECTED) return false;
+  RadarBlankGuard _blank;  // blank the radar across the WiFi burst, like every TX
+  WiFiClientSecure client;
+  applyTlsPolicy(client);
+  HTTPClient https;
+  https.setConnectTimeout(5000);
+  https.setTimeout(5000);
+  https.begin(client, server_register_device);
+  https.addHeader("Authorization", "Bearer " API_BEARER_TOKEN);
+  https.addHeader("Content-Type", "application/json");
+  String body = String("{\"mac\":\"") + deviceMacString() +
+                "\",\"device_token\":\"" + device_token +
+                "\",\"claim_code\":\"" + claim_code + "\"}";
+  int code = https.POST(body);
+  https.end();
+  Serial.printf("[REG] register_device HTTP %d\n", code);
+  return code == 200;
+}
+
+// Drive registration from taskCore0: retry with exponential backoff until the
+// first 200, then stop for this boot. Call once per Core 0 loop iteration; it is
+// a no-op until WiFi STA is connected and again once registration has succeeded.
+void serviceRegistration() {
+  static bool registered = false;
+  static unsigned long nextAttemptAt = 0;     // millis() of the next allowed attempt
+  static unsigned long backoffMs = 2000;      // doubles per failure, capped at 5 min
+  if (registered) return;
+  if (WiFi.getMode() != WIFI_STA || WiFi.status() != WL_CONNECTED) return;
+  if ((long)(millis() - nextAttemptAt) < 0) return;  // still backing off
+
+  if (registerDevice()) {
+    registered = true;
+    Serial.println("[REG] device registered with cloud");
+  } else {
+    nextAttemptAt = millis() + backoffMs;
+    backoffMs = (backoffMs < 300000UL) ? (backoffMs * 2) : 300000UL;  // cap at 5 min
+    Serial.printf("[REG] registration failed; next retry in %lu ms\n", backoffMs);
   }
 }
 
@@ -284,9 +393,9 @@ void sendLocalIP() {
 
   //connectWifi();
 
-  // Keyed by camera on the server; "NOT_SET" has no record, so don't bother.
-  if (camera_id == "NOT_SET" || camera_id.isEmpty()) {
-    Serial.println("camera_id not configured; skipping IP announce");
+  // Keyed by device_token on the server; minted at boot, so this is defensive.
+  if (device_token.isEmpty()) {
+    Serial.println("device_token not set; skipping IP announce");
     return;
   }
 
@@ -323,7 +432,7 @@ void sendLocalIP() {
     // leaks), uptime, reboot reason/count, and the lifetime rejection counters
     // (corrupt radar replies + proximity-gated distant traffic). All additive
     // fields -- Bubble ignores any it hasn't defined until the workflow maps them.
-    httpsRequestData = String("{\"camera\":\"") + camera_id +
+    httpsRequestData = String("{\"device_token\":\"") + device_token +
                        "\",\"ip_address\":\"" + local_ip_address +
                        "\",\"rssi\":\"" + WiFi.RSSI() +
                        "\",\"free_heap\":\"" + ESP.getFreeHeap() +
@@ -475,11 +584,21 @@ void sendUpload(const UploadRequest& req) {
                 (req.has_photo && req.fb != nullptr) ? "photo" : "speed-only",
                 (unsigned)ESP.getFreeHeap());
 
-  // No camera configured: the server has no record for "NOT_SET" and rejects
-  // the POST with 400 MISSING_DATA. Skip the upload rather than burning a
-  // connection + TLS handshake on a request that can only fail.
-  if (camera_id == "NOT_SET" || camera_id.isEmpty()) {
-    Serial.println("[UPLOAD] skipped: camera_id not configured");
+  // Identity missing (should never happen post-boot): nothing to authenticate
+  // the POST with, so skip rather than burning a TLS handshake on a sure failure.
+  if (device_token.isEmpty()) {
+    Serial.println("[UPLOAD] skipped: device_token not set");
+    return;
+  }
+
+  // Reject backoff: when the server rejects a capture (empty {} -- device not yet
+  // claimed by a user, or the user is over their monthly quota) we cool off for a
+  // while so a stream of passes doesn't hammer the API before the device is
+  // claimed. Set further down; checked here before spending a connection.
+  static unsigned long captureBackoffUntil = 0;
+  if ((long)(millis() - captureBackoffUntil) < 0) {
+    Serial.printf("[UPLOAD] skipped: backing off after a rejection (%lds left). Claim code: %s\n",
+                  (long)(captureBackoffUntil - millis()) / 1000, claim_code.c_str());
     return;
   }
 
@@ -550,8 +669,8 @@ void sendUpload(const UploadRequest& req) {
   if (req.has_photo && req.fb != nullptr) {
     // Stream prologue + base64(framebuffer) + epilogue without ever holding
     // the whole encoded image in RAM.
-    String prologue = "{\"send_photo\":\"true\",\"camera\":\"";
-    prologue += camera_id;
+    String prologue = "{\"send_photo\":\"true\",\"device_token\":\"";
+    prologue += device_token;
     prologue += "\",\"speed_actual\":\"";
     prologue += req.speed_actual;
     prologue += "\"";
@@ -564,8 +683,8 @@ void sendUpload(const UploadRequest& req) {
     httpsResponseCode = https.sendRequest("POST", &body, body.totalSize());
   } else {
     // Speed-only event (no photo): short, fully-buffered JSON body.
-    String json = "{\"send_photo\":\"false\",\"camera\":\"";
-    json += camera_id;
+    String json = "{\"send_photo\":\"false\",\"device_token\":\"";
+    json += device_token;
     json += "\",\"speed_actual\":\"";
     json += req.speed_actual;
     json += "\"";
@@ -586,5 +705,25 @@ void sendUpload(const UploadRequest& req) {
 
   // Free resources
   https.end();
+
+  // Interpret the result. The server returns {"status":"ok"} when the capture is
+  // stored, or an empty {} when it is rejected (device not yet claimed by a user,
+  // or the user is over their monthly quota). A rejection is NOT a hard error:
+  // keep the claim code visible and back off briefly so we don't hammer the API
+  // on every pass while the device is still unclaimed.
+  bool accepted = (httpsResponseCode == 200) && (payload.indexOf("\"ok\"") >= 0);
+  if (accepted) {
+    if (!device_claimed) {
+      device_claimed = true;
+      preferences.putBool("claimed", true);  // taskCore1 swaps the portal label to "linked"
+      Serial.println("[CLAIM] capture accepted -> device is now claimed (hiding claim code)");
+    }
+  } else if (httpsResponseCode == 200) {
+    // 200 + non-ok body == an explicit rejection (unclaimed / over quota).
+    captureBackoffUntil = millis() + 30000;  // 30s cool-off before the next attempt
+    Serial.printf("[UPLOAD] rejected (unclaimed or over quota); backing off 30s. Claim code: %s\n",
+                  claim_code.c_str());
+  }
+
   Serial.printf("[UPLOAD] done, heap=%u\n", (unsigned)ESP.getFreeHeap());
 }

@@ -9,6 +9,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"  // QueueHandle_t for the Core 1 -> Core 0 upload handoff
+#include "config.h"          // API_BASE_URL / bootstrap token / TLS root used below
 
 // ESP32 firmware version. Normally set by the build flag in platformio.ini;
 // this fallback keeps a plain compile working. Reported in the heartbeat and
@@ -88,7 +89,18 @@ QueueHandle_t uploadQueue;  // created in setup()
 // --- WiFi / cloud credentials (persisted in NVS) ---
 String ssid;                 // Stored WiFi SSID, "NOT_SET" until configured
 String password;             // Stored WiFi password, "NOT_SET" until configured
-String camera_id;            // minispeedcam.com camera identifier
+
+// --- Per-device identity (generated once on first boot, persisted in NVS) ---
+// One firmware image serves every unit; each device derives its own identity at
+// runtime instead of a per-unit build or a user-pasted camera id. device_token
+// is the secret that authenticates this unit to the cloud; claim_code is the
+// short human code the user types into the MiniSpeedCam web app to link the
+// device to their account. Both are minted from the hardware RNG on first boot
+// and then reused forever -- never regenerated if already stored, since that
+// would orphan the device's cloud record. See loadOrCreateIdentity() in api.h.
+String device_token;          // 32-char hex secret identifying this unit to the cloud
+String claim_code;            // 6-char human code (A-Z/2-9) shown in the portal for claiming
+volatile bool device_claimed; // true once a capture is accepted ({"status":"ok"}); hides the claim code
 
 // --- Sleep / startup gating ---
 int sleep_time;              // Absolute millis() at which post-boot grace window ends
@@ -97,10 +109,13 @@ bool wake_flag;              // true while the post-boot grace window is active
 bool ignore_flag;            // true: drop measurements during the startup blanking window
 int ignore_time;             // Absolute millis() at which the blanking window ends
 
-// --- Cloud endpoints (Bubble.io workflow URLs on minispeedcam.com) ---
-const char* server_capture = "https://minispeedcam.com/api/1.1/wf/capture";                    // POST: max speed (+ photo when speeding); send_photo field selects the case
-const char* server_local_ip_address = "https://minispeedcam.com/api/1.1/wf/local_ip_address";  // POST: announce local IP
-const char* server_firmware_check = "https://minispeedcam.com/api/1.1/wf/firmware_check";       // POST {camera,esp_fw,stm_fw} -> latest {esp,stm}_{version,url,md5}
+// --- Cloud endpoints (Bubble.io workflow URLs; base from config.h API_BASE_URL) ---
+// API_BASE_URL selects version-test (default) vs version-live (build flag). All
+// device identity now travels in device_token, not the old "camera" field.
+const char* server_register_device  = API_BASE_URL "/register_device";    // POST {mac,device_token,claim_code}: trust-on-first-use registration (idempotent)
+const char* server_capture          = API_BASE_URL "/capture";            // POST {device_token,speed_actual,send_photo,photo,...}: {"status":"ok"}=accepted, {}=rejected
+const char* server_local_ip_address = API_BASE_URL "/camera";             // POST: announce LAN IP + health heartbeat (keyed by device_token). Workflow renamed local_ip_address -> camera.
+const char* server_firmware_check   = API_BASE_URL "/firmware_check";     // POST {device_token,esp_fw,stm_fw} -> latest {esp,stm}_{version,url,md5}
 
 // --- Firmware OTA (manual-approve; triggered from the web-UI buttons) ---
 // An ESPUI button callback (AsyncTCP task) sets ota_request and returns; taskCore0
@@ -125,7 +140,7 @@ int httpsResponseCode;       // Last HTTPS status code
 String httpsRequestData;     // Request-body buffer used by sendLocalIP()
 
 // --- ESPUI control handles ---
-uint16_t wifi_ssid_text, wifi_pass_text, camera_id_text;  // ESPUI text inputs for credentials
+uint16_t wifi_ssid_text, wifi_pass_text;  // ESPUI text inputs for WiFi credentials
 uint16_t labelSpeed;         // ESPUI label showing the live speed reading
 uint16_t labelStream;        // ESPUI label showing the aiming-stream URL (or "off")
 uint16_t aimingSwitchId;     // ESPUI switcher handle, so streamStop() can flip it off on auto-off
