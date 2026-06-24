@@ -183,8 +183,12 @@ void setup() {
   // load saved variables
   preferences.begin("local", false);
   diagnosticsLogBoot();  // record reset reason + bump persisted boot counter for the Status tab
+  otaHealthBootCheck();  // if a just-applied ESP image is crash-looping, revert to the previous slot now
   ssid = preferences.getString("ssid", "NOT_SET");
   password = preferences.getString("pass", "NOT_SET");
+  api_base_url = preferences.getString("api_base", API_BASE_URL);  // data destination; user-editable on the Wifi tab (default from config.h)
+  rebuildServerEndpoints();  // build the register/capture/camera URLs from api_base_url
+  Serial.printf("[API] base URL: %s\n", api_base_url.c_str());
   loadOrCreateIdentity();  // device_token + claim_code: minted once on first boot, reused forever
   min_speed = preferences.getInt("min_speed", 3);             // The minimum speed (MPH) that the tracker should track any vehicle and upload data
   photo_speed = preferences.getInt("photo_speed", 10);        // Cars speed (MPH) when photo should be taken
@@ -464,6 +468,7 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
         Serial.printf("[RUN] start: speed=%d >= min_speed=%d, mag=%u >= min_signal=%d (confirmed)\n",
                       speed, min_speed, (unsigned)g_last_peak_mag, min_signal);
 
+        g_run_active = true;  // tell Core 0's auto-update service a pass is in progress (don't reboot/seize UART)
         delay(100);
         maxSpeed = 0;               // Tracks the max speed over the entire pass
         bool photo_taken = false;   // ensures we capture at most one frame per run
@@ -635,6 +640,7 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
           }
         }
 
+        g_run_active = false;  // pass over; Core 0's auto-update service may act again
         previousMillis = millis();
       }
     }
@@ -687,6 +693,7 @@ void taskCore0(void* parameter) {
     }
 
     serviceRegistration();  // trust-on-first-use device registration (retries w/ backoff until 200)
-    otaServiceCore0();  // run any web-UI-requested firmware check/update here (off the AsyncTCP task)
+    otaHealthService();  // commit-or-revert a freshly-applied ESP image once it proves healthy
+    otaAutoService();    // poll GitHub on a timer and auto-apply newer firmware while idle
   }
 }

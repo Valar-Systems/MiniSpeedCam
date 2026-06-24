@@ -1,0 +1,134 @@
+name: Release firmware
+
+# Build the ESP32 + STM32 images and publish them -- together with a manifest.json
+# the devices read -- as GitHub Release assets whenever a `fw-*` tag is pushed.
+# The MiniSpeedCam fleet polls /releases/latest and auto-applies any strictly-newer
+# manifest entry while idle (see
+# version/r1.1/firmware/platformio/esp32_firmware_platformio/src/ota.h).
+#
+# Required repo configuration:
+#   - secret  MSC_BOOTSTRAP_TOKEN  : transport bearer token baked into the ESP build
+#                                    (config.h #errors without it).
+#   - var     MSC_API_BASE_URL     : (optional) override the cloud API base URL. If
+#                                    unset, CI builds against the version-live URL
+#                                    already present (commented) in platformio.ini.
+#
+# Tag a release like:  git tag fw-1.0.4 && git push origin fw-1.0.4
+# Both MCUs are stamped with the version parsed from the tag (fw-1.0.4 -> 1.0.4),
+# so the published manifest always matches the binaries it ships.
+
+on:
+  push:
+    tags:
+      - 'fw-*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing fw-* tag to (re)build and publish'
+        required: true
+
+permissions:
+  contents: write   # create the Release + upload assets
+
+env:
+  ESP_DIR: version/r1.1/firmware/platformio/esp32_firmware_platformio
+  STM_DIR: version/r1.1/firmware/platformio/stm32_firmware_platformio
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve tag + version
+        id: tag
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          case "$TAG" in
+            fw-*) ;;
+            *) echo "::error::tag '$TAG' does not start with fw-"; exit 1 ;;
+          esac
+          echo "tag=$TAG"            >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#fw-}"  >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'   # pioarduino's max-supported Python (pin it; see project notes)
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/pip
+          key: pio-${{ runner.os }}-${{ hashFiles('**/platformio.ini') }}
+
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+
+      - name: Stamp version + select API base
+        env:
+          API_BASE: ${{ vars.MSC_API_BASE_URL }}
+        run: |
+          V='${{ steps.tag.outputs.version }}'
+          # ESP firmware version (build flag in platformio.ini).
+          sed -i "s|-DFW_VERSION=\"[^\"]*\"|-DFW_VERSION=\"${V}\"|" "$ESP_DIR/platformio.ini"
+          # STM firmware version (compiled-in #define reported on the 'v' command).
+          sed -i "s|#define STM_FW_VERSION \"[^\"]*\"|#define STM_FW_VERSION \"${V}\"|" "$STM_DIR/Core/Src/main.c"
+          # Release builds target the live cloud: uncomment the version-live flag
+          # that already ships (commented) in platformio.ini, keeping its quoting.
+          sed -i "s|; '-DAPI_BASE_URL=|'-DAPI_BASE_URL=|" "$ESP_DIR/platformio.ini"
+          # Optional per-repo override of the API base URL.
+          if [ -n "$API_BASE" ]; then
+            sed -i "s|-DAPI_BASE_URL=\"[^\"]*\"|-DAPI_BASE_URL=\"${API_BASE}\"|" "$ESP_DIR/platformio.ini"
+          fi
+          echo "--- ESP build flags ---"; grep -nE 'FW_VERSION|API_BASE_URL' "$ESP_DIR/platformio.ini"
+          echo "--- STM version ---";     grep -n  'define STM_FW_VERSION'    "$STM_DIR/Core/Src/main.c"
+
+      - name: Build ESP32 firmware
+        env:
+          MSC_BOOTSTRAP_TOKEN: ${{ secrets.MSC_BOOTSTRAP_TOKEN }}
+        run: pio run -e esp32-s3 -d "$ESP_DIR"
+
+      - name: Build STM32 firmware
+        run: pio run -d "$STM_DIR"
+
+      - name: Assemble release assets + manifest
+        run: |
+          V='${{ steps.tag.outputs.version }}'
+          TAG='${{ steps.tag.outputs.tag }}'
+          REPO='${{ github.repository }}'
+          ESP_SRC="$ESP_DIR/.pio/build/esp32-s3/firmware.bin"
+          STM_SRC="$STM_DIR/.pio/build/genericSTM32F301K8/firmware.bin"
+          test -f "$ESP_SRC" || { echo "::error::ESP firmware.bin missing"; exit 1; }
+          test -f "$STM_SRC" || { echo "::error::STM firmware.bin missing"; exit 1; }
+
+          mkdir -p dist
+          ESP_NAME="esp32-fw-$V.bin"
+          STM_NAME="stm32-fw-$V.bin"
+          cp "$ESP_SRC" "dist/$ESP_NAME"
+          cp "$STM_SRC" "dist/$STM_NAME"
+          ESP_MD5=$(md5sum "dist/$ESP_NAME" | cut -d' ' -f1)
+          STM_MD5=$(md5sum "dist/$STM_NAME" | cut -d' ' -f1)
+          BASE="https://github.com/$REPO/releases/download/$TAG"
+
+          # The device reads versions + URLs + MD5s from here (ota.h / otaCheckGithub()).
+          # printf (not a heredoc) so YAML block indentation can't corrupt the file.
+          printf '{\n  "esp_version": "%s",\n  "esp_url": "%s",\n  "esp_md5": "%s",\n  "stm_version": "%s",\n  "stm_url": "%s",\n  "stm_md5": "%s"\n}\n' \
+            "$V" "$BASE/$ESP_NAME" "$ESP_MD5" "$V" "$BASE/$STM_NAME" "$STM_MD5" > dist/manifest.json
+
+          echo "----- dist/manifest.json -----"; cat dist/manifest.json
+          echo "esp_size=$(stat -c%s dist/$ESP_NAME)B  stm_size=$(stat -c%s dist/$STM_NAME)B"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: MiniSpeedCam ${{ steps.tag.outputs.tag }}
+          files: |
+            dist/esp32-fw-*.bin
+            dist/stm32-fw-*.bin
+            dist/manifest.json
+          fail_on_unmatched_files: true

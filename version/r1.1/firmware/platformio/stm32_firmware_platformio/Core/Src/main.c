@@ -26,8 +26,12 @@
 
 // Firmware version reported to the ESP32 over UART on the 'v' command. The
 // ESP-driven OTA flow reads this to decide whether this MCU needs reflashing.
-// Bump on every STM32 firmware release.
-#define STM_FW_VERSION "1.0.2"
+// Bump on every STM32 firmware release. Build-flag overridable so release CI can
+// stamp it from the git tag (-DSTM_FW_VERSION=\"1.0.4\") and keep the published
+// manifest's stm_version consistent with the binary it ships.
+#ifndef STM_FW_VERSION
+#define STM_FW_VERSION "1.0.4"
+#endif
 
 // Do we skip data analysis after updating display?
 //#define SKIP_ADC_DATA_AFTER_DISPLAY

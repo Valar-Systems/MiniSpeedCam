@@ -3,8 +3,9 @@
  *
  * Builds the configuration portal exposed at the device's IP:
  *   - "Device" tab:  speed units toggle, minimum speed, photo speed.
- *   - "Wifi Settings" tab: SSID/password/camera-id text inputs, plus
- *     Save (writes to NVS and reboots) and Clear Settings buttons.
+ *   - "Wifi Settings" tab: SSID/password text inputs and the API base URL
+ *     (data destination), plus Save (writes to NVS and reboots) and Clear
+ *     Settings buttons.
  *
  * Each control's callback updates the matching global in variables.h
  * and persists it via the shared `preferences` (NVS) instance.
@@ -166,19 +167,33 @@ void textPasswordCall(Control* sender, int type) {
   //    Serial.print(pass);
 }
 
+// API base URL (data destination) is read on Save (see buttonSaveNetworkCall);
+// no live update needed. Applying it live would mutate the endpoint Strings that
+// Core 0 reads mid-POST, so the change is persisted and takes effect on reboot.
+void textServerCall(Control* sender, int type) {
+}
+
 /**
- * Save Settings button: snapshots SSID/password from the ESPUI text inputs into
- * NVS, then reboots so the new credentials take effect via connectWifiAP() at
- * startup. Device identity (device_token / claim_code) is generated on first
- * boot and persisted separately, so it is untouched here.
+ * Save Settings button: snapshots SSID/password and the API base URL (the data
+ * destination) from the ESPUI text inputs into NVS, then reboots so all three
+ * take effect at startup -- credentials via connectWifiAP(), the server via
+ * rebuildServerEndpoints(). Device identity (device_token / claim_code) is
+ * generated on first boot and persisted separately, so it is untouched here.
+ *
+ * A blank Data Server field is stored as-is; rebuildServerEndpoints() falls back
+ * to the compile-time default for an empty base, so clearing the field restores
+ * the built-in server on the next boot.
  */
 void buttonSaveNetworkCall(Control* sender, int type) {
   if (type == B_UP) {
     Serial.println("Button Pressed");
     String ssid = ESPUI.getControl(wifi_ssid_text)->value;
     String pass = ESPUI.getControl(wifi_pass_text)->value;
+    String server = ESPUI.getControl(wifi_server_text)->value;
+    server.trim();
     preferences.putString("ssid", ssid);
     preferences.putString("pass", pass);
+    preferences.putString("api_base", server);
     ESP.restart();
   }
 }
@@ -199,19 +214,10 @@ void buttonClearNetworkCall(Control* sender, int type) {
   }
 }
 
-// --- Firmware OTA buttons (manual approve) ----------------------------------
-// These run on the AsyncTCP task, so they ONLY set a flag and return; taskCore0
-// does the slow check/download/flash and reports progress via ota_status (see
-// ota.h). Never do network/flash work inline here -- it would block ESPUI.
-void otaCheckCall(Control* sender, int type) {
-  if (type == B_UP) ota_request = OTA_CHECK;
-}
-void otaInstallEspCall(Control* sender, int type) {
-  if (type == B_UP) ota_request = OTA_INSTALL_ESP;
-}
-void otaInstallStmCall(Control* sender, int type) {
-  if (type == B_UP) ota_request = OTA_INSTALL_STM;
-}
+// --- Firmware OTA ------------------------------------------------------------
+// Updates are now fully automatic from GitHub Releases (see otaAutoService() in
+// ota.h): no buttons, no callbacks. The web UI only shows a read-only status
+// line, mirrored from ota_status by updateStatusDisplay() below.
 
 // ----- Status tab live-update handles -----
 // Label controls created in load_espui() and refreshed by
@@ -228,7 +234,15 @@ static uint16_t status_last_upload_label = 0;
 static uint16_t status_reset_reason_label = 0;
 static uint16_t status_boot_count_label = 0;
 static uint16_t labelOtaStatus = 0;  // firmware OTA status line (written by Core 0, mirrored here from Core 1)
+static uint16_t labelFwVersion = 0;  // installed ESP + STM firmware versions (refreshed so a post-flash STM bump shows)
 static uint16_t claim_code_label = 0; // shows the claim code until the device is claimed, then "Linked"
+
+// Compose the installed-firmware version string (ESP is compile-time; STM is read
+// over UART at boot and can change after an STM auto-flash). Used by the config
+// page label and refreshed live by updateStatusDisplay().
+static String firmwareVersionText() {
+  return String("ESP ") + FW_VERSION + "  /  STM " + stm_fw_version;
+}
 
 /**
  * Build the ESPUI control tree and start serving it.
@@ -243,7 +257,8 @@ static uint16_t claim_code_label = 0; // shows the claim code until the device i
  *
  * Tab 2 ("Wifi Settings"):
  *   - Clear Settings button
- *   - Network / Password / Camera ID text inputs
+ *   - Network / Password text inputs
+ *   - API Base URL text input (data destination; blank = compile-time default)
  *   - Save Settings button
  *
  * Tab 3 ("Status"):
@@ -277,12 +292,10 @@ void load_espui(void) {
   aimingSwitchId = ESPUI.addControl(ControlType::Switcher, "Aiming Stream (video, 5 min):", "0", ControlColor::Sunflower, tab1, &aimingStreamCall);
   labelStream = ESPUI.addControl(ControlType::Label, "Stream URL", "off", ControlColor::Sunflower, tab1);
 
-  //tab1: Firmware update (manual-approve OTA; buttons set a flag, Core 0 acts)
-  ESPUI.addControl(ControlType::Separator, "Firmware Update", "", ControlColor::None, tab1);
-  labelOtaStatus = ESPUI.addControl(ControlType::Label, "Firmware", String(ota_status), ControlColor::Wetasphalt, tab1);
-  ESPUI.addControl(ControlType::Button, "Check for Updates", "CHECK", ControlColor::Wetasphalt, tab1, &otaCheckCall);
-  ESPUI.addControl(ControlType::Button, "Install ESP32 Update", "UPDATE ESP", ControlColor::Carrot, tab1, &otaInstallEspCall);
-  ESPUI.addControl(ControlType::Button, "Install STM32 Update", "UPDATE STM", ControlColor::Carrot, tab1, &otaInstallStmCall);
+  //tab1: Firmware (automatic OTA from GitHub Releases -- version + status, no buttons)
+  ESPUI.addControl(ControlType::Separator, "Firmware (auto-update from GitHub)", "", ControlColor::None, tab1);
+  labelFwVersion = ESPUI.addControl(ControlType::Label, "Firmware Version", firmwareVersionText(), ControlColor::Wetasphalt, tab1);
+  labelOtaStatus = ESPUI.addControl(ControlType::Label, "Update status", String(ota_status), ControlColor::Wetasphalt, tab1);
 
   //tab2: WiFi
   ESPUI.addControl(ControlType::Separator, "Wifi Status", "", ControlColor::None, tab2);
@@ -294,6 +307,11 @@ void load_espui(void) {
   ESPUI.addControl(ControlType::Separator, "Set Wifi", "", ControlColor::None, tab2);
   wifi_ssid_text = ESPUI.addControl(ControlType::Text, "Network", String(ssid), ControlColor::Emerald, tab2, &textNetworkCall); //Text: Network
   wifi_pass_text = ESPUI.addControl(ControlType::Text, "Password", String(password), ControlColor::Emerald, tab2, &textPasswordCall); //Text: Password
+
+  //Text: API base URL (data destination). Pre-filled with the current base;
+  // clear it to restore the built-in default. Applied on Save (reboots).
+  ESPUI.addControl(ControlType::Separator, "Data Server (where captures are sent)", "", ControlColor::None, tab2);
+  wifi_server_text = ESPUI.addControl(ControlType::Text, "API Base URL (blank = default)", api_base_url, ControlColor::Emerald, tab2, &textServerCall);
 
   //Button: Save
   ESPUI.addControl(ControlType::Button, "Save Settings", "SAVE", ControlColor::Emerald, tab2, &buttonSaveNetworkCall);
@@ -379,6 +397,7 @@ void updateStatusDisplay(void) {
   ESPUI.updateLabel(status_ip_label, connected ? WiFi.localIP().toString() : String("n/a"));
   ESPUI.updateLabel(status_last_upload_label, String(diagnosticsLastUploadCode()));
   ESPUI.updateLabel(labelOtaStatus, String(ota_status));  // OTA progress line (set by Core 0)
+  ESPUI.updateLabel(labelFwVersion, firmwareVersionText());  // installed ESP/STM versions (STM may change after an auto-flash)
   // device_claimed is flipped by sendUpload() on Core 0; mirror it to the portal.
   ESPUI.updateLabel(claim_code_label, device_claimed ? String("Linked to your account") : claim_code);
 }
