@@ -1,5 +1,11 @@
 /**
- * api.h - WiFi management and HTTPS uploads to minispeedcam.com.
+ * api.h - WiFi management and capture uploads to the configured API base.
+ *
+ * Uploads default to minispeedcam.com (HTTPS) but the base URL is user-editable
+ * (Wifi Settings tab -> Data Server), so the same code path serves a generic
+ * endpoint such as a LAN Home Assistant webhook. selectApiClient() picks TLS vs
+ * plain transport from the URL scheme, and sendUpload() accepts any 2xx from a
+ * non-Bubble server (see g_server_secure / g_server_is_bubble in variables.h).
  *
  * Provides:
  *   - connectWifiAP():   first-boot bring-up; tries STA, otherwise opens
@@ -103,6 +109,27 @@ static void applyTlsPolicyGitHub(WiFiClientSecure& client) {
   }
 }
 
+/**
+ * Pick the transport for an outbound POST to the configured API base.
+ *
+ * https:// bases use WiFiClientSecure with the TLS policy above; http:// bases
+ * (g_server_secure == false -- e.g. a LAN Home Assistant webhook on :8123) use a
+ * plain WiFiClient with no TLS. Both client objects are owned by the caller and
+ * must outlive the HTTPClient; this returns the one to hand to https.begin().
+ * HTTPClient stores a WiFiClient* and calls connect() through it -- connect() is
+ * virtual (Arduino's Client base), so the secure client still performs its TLS
+ * handshake when selected. The URL scheme (which sets the port/protocol inside
+ * HTTPClient) and g_server_secure are both derived from api_base_url, so they
+ * always agree.
+ */
+static WiFiClient& selectApiClient(WiFiClient& plain, WiFiClientSecure& secure) {
+  if (g_server_secure) {
+    applyTlsPolicy(secure);
+    return secure;
+  }
+  return plain;
+}
+
 // --- Per-device identity ------------------------------------------------------
 // The same firmware image flashes to every unit; each device mints its own
 // identity at runtime (no per-unit build). loadOrCreateIdentity() generates the
@@ -173,8 +200,9 @@ void loadOrCreateIdentity() {
 bool registerDevice() {
   if (WiFi.getMode() != WIFI_STA || WiFi.status() != WL_CONNECTED) return false;
   RadarBlankGuard _blank;  // blank the radar across the WiFi burst, like every TX
-  WiFiClientSecure client;
-  applyTlsPolicy(client);
+  WiFiClient plainClient;
+  WiFiClientSecure secureClient;
+  WiFiClient& client = selectApiClient(plainClient, secureClient);  // https.. -> TLS; http.. -> plain (LAN HA)
   HTTPClient https;
   https.setConnectTimeout(5000);
   https.setTimeout(5000);
@@ -447,8 +475,9 @@ void sendLocalIP() {
     local_ip_address = WiFi.localIP().toString();
     Serial.println(local_ip_address);
 
-    WiFiClientSecure client;  // stack-scoped: freed on return, no leak (lives past https.end())
-    applyTlsPolicy(client);
+    WiFiClient plainClient;          // stack-scoped: freed on return, no leak (lives past https.end())
+    WiFiClientSecure secureClient;   // ditto
+    WiFiClient& client = selectApiClient(plainClient, secureClient);  // https.. -> TLS; http.. -> plain (LAN HA)
 
     HTTPClient https;
 
@@ -671,9 +700,11 @@ void sendUpload(const UploadRequest& req) {
     timeout--;
   }
 
-  // secure client; TLS policy per config.h (pinned cert if set, else insecure)
-  WiFiClientSecure client;  // stack-scoped: freed on return, no leak (lives past https.end())
-  applyTlsPolicy(client);
+  // Transport per configured scheme: https.. -> WiFiClientSecure (TLS policy from
+  // config.h, pinned cert if set else insecure); http.. -> plain WiFiClient (LAN HA).
+  WiFiClient plainClient;          // stack-scoped: freed on return, no leak (lives past https.end())
+  WiFiClientSecure secureClient;   // ditto
+  WiFiClient& client = selectApiClient(plainClient, secureClient);
 
   HTTPClient https;
   String recv_token = "Bearer " API_BEARER_TOKEN;  // token from config.h (build-flag overridable)
@@ -741,20 +772,28 @@ void sendUpload(const UploadRequest& req) {
   // Free resources
   https.end();
 
-  // Interpret the result. The server returns {"status":"ok"} when the capture is
-  // stored, or an empty {} when it is rejected (device not yet claimed by a user,
-  // or the user is over their monthly quota). A rejection is NOT a hard error:
-  // keep the claim code visible and back off briefly so we don't hammer the API
-  // on every pass while the device is still unclaimed.
-  bool accepted = (httpsResponseCode == 200) && (payload.indexOf("\"ok\"") >= 0);
+  // Interpret the result. Two protocols:
+  //   Bubble (minispeedcam.com): {"status":"ok"} == stored; an empty {} == rejected
+  //     (device not yet claimed by a user, or the user is over their monthly quota).
+  //     A rejection is NOT a hard error -- keep the claim code visible and back off
+  //     briefly so we don't hammer the API on every pass while still unclaimed.
+  //   Generic endpoint (e.g. a Home Assistant webhook, g_server_is_bubble == false):
+  //     there is no claim/quota handshake, so any 2xx means the event was accepted --
+  //     an empty 200 is success, not a rejection, and must NOT trip the backoff.
+  bool accepted;
+  if (g_server_is_bubble) {
+    accepted = (httpsResponseCode == 200) && (payload.indexOf("\"ok\"") >= 0);
+  } else {
+    accepted = (httpsResponseCode >= 200 && httpsResponseCode < 300);
+  }
   if (accepted) {
     if (!device_claimed) {
       device_claimed = true;
       preferences.putBool("claimed", true);  // taskCore1 swaps the portal label to "linked"
       Serial.println("[CLAIM] capture accepted -> device is now claimed (hiding claim code)");
     }
-  } else if (httpsResponseCode == 200) {
-    // 200 + non-ok body == an explicit rejection (unclaimed / over quota).
+  } else if (g_server_is_bubble && httpsResponseCode == 200) {
+    // 200 + non-ok body == an explicit Bubble rejection (unclaimed / over quota).
     captureBackoffUntil = millis() + 30000;  // 30s cool-off before the next attempt
     Serial.printf("[UPLOAD] rejected (unclaimed or over quota); backing off 30s. Claim code: %s\n",
                   claim_code.c_str());

@@ -128,12 +128,52 @@ bool wake_flag;              // true while the post-boot grace window is active
 bool ignore_flag;            // true: drop measurements during the startup blanking window
 int ignore_time;             // Absolute millis() at which the blanking window ends
 
-// --- Cloud endpoints (Bubble.io workflow URLs; base from config.h API_BASE_URL) ---
-// API_BASE_URL selects version-test (default) vs version-live (build flag). All
-// device identity now travels in device_token, not the old "camera" field.
-const char* server_register_device  = API_BASE_URL "/register_device";    // POST {mac,device_token,claim_code}: trust-on-first-use registration (idempotent)
-const char* server_capture          = API_BASE_URL "/capture";            // POST {device_token,speed_actual,send_photo,photo,...}: {"status":"ok"}=accepted, {}=rejected
-const char* server_local_ip_address = API_BASE_URL "/camera";             // POST: announce LAN IP + health heartbeat (keyed by device_token). Workflow renamed local_ip_address -> camera.
+// --- Cloud endpoints (Bubble.io workflow URLs; base is runtime-configurable) ---
+// api_base_url is the data destination. It defaults to API_BASE_URL (config.h,
+// build-flag overridable: version-test vs version-live) but the user can
+// re-point it at a different server from the "Data Server" field on the Wifi
+// Settings tab; the chosen value is persisted in NVS (key "api_base"). The three
+// endpoint Strings are rebuilt from it by rebuildServerEndpoints(), called once
+// at boot after the stored value is loaded. A change takes effect on reboot (the
+// Save button reboots), so Core 0 never reads an endpoint String mid-edit. All
+// device identity travels in device_token, not the old "camera" field.
+String api_base_url = API_BASE_URL;     // editable API base (no trailing slash); see rebuildServerEndpoints()
+String server_register_device;          // POST {mac,device_token,claim_code}: trust-on-first-use registration (idempotent)
+String server_capture;                  // POST {device_token,speed_actual,send_photo,photo,...}: {"status":"ok"}=accepted, {}=rejected
+String server_local_ip_address;         // POST: announce LAN IP + health heartbeat (keyed by device_token). Workflow renamed local_ip_address -> camera.
+
+// Derived from api_base_url by rebuildServerEndpoints() (read-only afterwards):
+//   g_server_secure   - true  => https:// base, use WiFiClientSecure + TLS policy.
+//                       false => http:// base (e.g. a LAN Home Assistant webhook),
+//                                use a plain WiFiClient (no TLS handshake).
+//   g_server_is_bubble- true  => the minispeedcam.com Bubble backend, which signals
+//                                accept/reject as {"status":"ok"} vs an empty {}.
+//                       false => a generic endpoint (HA webhook, self-host): any 2xx
+//                                means the event was taken (no claim/quota protocol).
+// Both Core 0 only, set once at boot, so no cross-task guarding is needed.
+bool g_server_secure = true;
+bool g_server_is_bubble = true;
+
+// Rebuild the endpoint URLs from api_base_url. Call once at boot after loading
+// api_base_url from NVS (and never while Core 0 might be mid-POST -- the Save
+// button reboots instead of mutating these live). Trims surrounding whitespace,
+// falls back to the compile-time default if the stored base is blank, strips any
+// trailing slash so "<base>/" + "/capture" can't double up the separator, and
+// derives the transport/semantics flags above from the (case-insensitive) scheme
+// and host.
+void rebuildServerEndpoints() {
+  api_base_url.trim();
+  if (api_base_url.isEmpty()) api_base_url = API_BASE_URL;
+  while (api_base_url.endsWith("/")) api_base_url.remove(api_base_url.length() - 1);
+  server_register_device  = api_base_url + "/register_device";
+  server_capture          = api_base_url + "/capture";
+  server_local_ip_address = api_base_url + "/camera";
+
+  String lower = api_base_url;
+  lower.toLowerCase();
+  g_server_secure    = !lower.startsWith("http://");          // anything not explicitly http:// is treated as https
+  g_server_is_bubble = (lower.indexOf("minispeedcam.com") >= 0);
+}
 
 // --- Firmware OTA source: GitHub Releases (replaces the old Bubble firmware_check) ---
 // The device GETs the latest release from the public repo's Releases API, then
@@ -164,6 +204,7 @@ String httpsRequestData;     // Request-body buffer used by sendLocalIP()
 
 // --- ESPUI control handles ---
 uint16_t wifi_ssid_text, wifi_pass_text;  // ESPUI text inputs for WiFi credentials
+uint16_t wifi_server_text;                // ESPUI text input for the API base URL (data destination)
 uint16_t labelSpeed;         // ESPUI label showing the live speed reading
 uint16_t labelStream;        // ESPUI label showing the aiming-stream URL (or "off")
 uint16_t aimingSwitchId;     // ESPUI switcher handle, so streamStop() can flip it off on auto-off

@@ -186,6 +186,9 @@ void setup() {
   otaHealthBootCheck();  // if a just-applied ESP image is crash-looping, revert to the previous slot now
   ssid = preferences.getString("ssid", "NOT_SET");
   password = preferences.getString("pass", "NOT_SET");
+  api_base_url = preferences.getString("api_base", API_BASE_URL);  // data destination; user-editable on the Wifi tab (default from config.h)
+  rebuildServerEndpoints();  // build the register/capture/camera URLs from api_base_url
+  Serial.printf("[API] base URL: %s\n", api_base_url.c_str());
   loadOrCreateIdentity();  // device_token + claim_code: minted once on first boot, reused forever
   min_speed = preferences.getInt("min_speed", 3);             // The minimum speed (MPH) that the tracker should track any vehicle and upload data
   photo_speed = preferences.getInt("photo_speed", 10);        // Cars speed (MPH) when photo should be taken
