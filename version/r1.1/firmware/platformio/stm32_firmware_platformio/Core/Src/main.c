@@ -30,7 +30,7 @@
 // stamp it from the git tag (-DSTM_FW_VERSION=\"1.0.4\") and keep the published
 // manifest's stm_version consistent with the binary it ships.
 #ifndef STM_FW_VERSION
-#define STM_FW_VERSION "1.0.3"
+#define STM_FW_VERSION "1.0.4"
 #endif
 
 // Do we skip data analysis after updating display?
