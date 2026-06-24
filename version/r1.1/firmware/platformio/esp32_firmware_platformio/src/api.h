@@ -84,6 +84,25 @@ static void applyTlsPolicy(WiFiClientSecure& client) {
   }
 }
 
+/**
+ * TLS trust policy for the GitHub auto-update path (ota.h).
+ *
+ * Pins the GitHub root bundle (config.h / GITHUB_CA_ROOT_CERT) so the whole
+ * update path is authenticated: api.github.com (release metadata) and the
+ * *.githubusercontent.com asset hosts (manifest.json + the .bin downloads) chain
+ * to different roots, both in the bundle, and HTTPClient keeps this same client
+ * across the github.com -> githubusercontent.com asset redirect, so one policy
+ * validates every hop. Falls back to setInsecure() if the bundle was overridden
+ * to empty (the binary is MD5-verified regardless, see ota.h).
+ */
+static void applyTlsPolicyGitHub(WiFiClientSecure& client) {
+  if (kGithubCaRootCert != nullptr && kGithubCaRootCert[0] != '\0') {
+    client.setCACert(kGithubCaRootCert);
+  } else {
+    client.setInsecure();
+  }
+}
+
 // --- Per-device identity ------------------------------------------------------
 // The same firmware image flashes to every unit; each device mints its own
 // identity at runtime (no per-unit build). loadOrCreateIdentity() generates the
@@ -184,6 +203,7 @@ void serviceRegistration() {
 
   if (registerDevice()) {
     registered = true;
+    g_cloud_ok = true;  // a 200 here proves outbound HTTPS works (OTA health signal)
     Serial.println("[REG] device registered with cloud");
   } else {
     nextAttemptAt = millis() + backoffMs;
@@ -469,6 +489,7 @@ void sendLocalIP() {
       payload = https.getString();
       Serial.println(payload);
     }
+    if (httpsResponseCode == 200) g_cloud_ok = true;  // OTA health signal: outbound HTTPS works
     // Free resources
     https.end();
   }

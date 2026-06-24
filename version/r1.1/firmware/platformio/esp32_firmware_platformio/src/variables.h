@@ -60,6 +60,17 @@ volatile bool power_saver;
 
 volatile bool connect_wifi;  // Core 1 -> Core 0: please attempt a WiFi (re)connect
 
+// Core 1 -> Core 0: true while a tracking run (a car pass) is in progress. The
+// auto-update service on Core 0 reads this so it never reboots (ESP) or seizes
+// UART1 (STM) mid-capture; it only applies firmware between passes. Set at run
+// start and cleared when the run's UploadRequest is enqueued (see taskCore1).
+volatile bool g_run_active = false;
+
+// Set true on the first successful cloud round-trip since boot (a Bubble 200 or
+// a GitHub check). The OTA health watchdog reads this to confirm a freshly-applied
+// ESP image can actually reach the network before committing it (see ota.h).
+volatile bool g_cloud_ok = false;
+
 // True once boot STA association failed and we fell back to the config soft-AP.
 // While set, radar motion must NOT trigger an STA reconnect: connectWifi() would
 // tear the portal down chasing an unreachable network, leaving the device with
@@ -123,16 +134,20 @@ int ignore_time;             // Absolute millis() at which the blanking window e
 const char* server_register_device  = API_BASE_URL "/register_device";    // POST {mac,device_token,claim_code}: trust-on-first-use registration (idempotent)
 const char* server_capture          = API_BASE_URL "/capture";            // POST {device_token,speed_actual,send_photo,photo,...}: {"status":"ok"}=accepted, {}=rejected
 const char* server_local_ip_address = API_BASE_URL "/camera";             // POST: announce LAN IP + health heartbeat (keyed by device_token). Workflow renamed local_ip_address -> camera.
-const char* server_firmware_check   = API_BASE_URL "/firmware_check";     // POST {device_token,esp_fw,stm_fw} -> latest {esp,stm}_{version,url,md5}
 
-// --- Firmware OTA (manual-approve; triggered from the web-UI buttons) ---
-// An ESPUI button callback (AsyncTCP task) sets ota_request and returns; taskCore0
-// performs the work and writes a human-readable line into ota_status, which
-// taskCore1 mirrors to the web UI. ota_request is an atomic int; ota_status is a
-// fixed buffer (a torn cross-task read garbles one status refresh, never crashes).
-// The discovered URLs/MD5s are touched only on Core 0, so they need no guarding.
-enum { OTA_NONE = 0, OTA_CHECK = 1, OTA_INSTALL_ESP = 2, OTA_INSTALL_STM = 3 };
-volatile int ota_request = OTA_NONE;
+// --- Firmware OTA source: GitHub Releases (replaces the old Bubble firmware_check) ---
+// The device GETs the latest release from the public repo's Releases API, then
+// reads the attached manifest.json asset for the per-MCU versions + .bin URLs +
+// MD5s (see otaCheckGithub() in ota.h). Owner/repo come from config.h.
+const char* server_github_latest = "https://api.github.com/repos/" GITHUB_OWNER "/" GITHUB_REPO "/releases/latest";
+
+// --- Firmware OTA (automatic from GitHub; no user buttons) ---
+// taskCore0 polls GitHub on a timer and applies any strictly-newer image while
+// the device is idle; it writes a human-readable line into ota_status, which
+// taskCore1 mirrors to the web UI. ota_status is a fixed buffer (a torn
+// cross-task read garbles one status refresh, never crashes). The discovered
+// URLs/MD5s and the *_available flags are touched only on Core 0, so they need
+// no guarding.
 char ota_status[96] = "idle";
 String ota_esp_version, ota_esp_url, ota_esp_md5;
 String ota_stm_version, ota_stm_url, ota_stm_md5;
