@@ -195,8 +195,14 @@ function syncStream(on){
   streamShown=on;
 }
 const toggleStream=async()=>{await post('/api/stream',{on:$('streamToggle').checked});syncStream($('streamToggle').checked)};
-refresh();
-setInterval(refresh,1000);
+// Poll the live Status values every 4 s, and pause entirely while the tab is
+// hidden -- each poll is a WiFi TX burst that disturbs the shared-rail radar, so
+// a backgrounded page goes quiet instead of nagging the radio once a second.
+let pollTimer=null;
+function startPolling(){if(pollTimer)return;refresh();pollTimer=setInterval(refresh,4000)}
+function stopPolling(){if(pollTimer){clearInterval(pollTimer);pollTimer=null}}
+document.addEventListener('visibilitychange',()=>document.hidden?stopPolling():startPolling());
+startPolling();
 </script>
 </body>
 </html>)HTML";
