@@ -189,6 +189,10 @@ const char* server_github_latest = "https://api.github.com/repos/" GITHUB_OWNER 
 // URLs/MD5s and the *_available flags are touched only on Core 0, so they need
 // no guarding.
 char ota_status[96] = "idle";
+// Manual "check for updates now" request from the config-page button. Set by the
+// POST /api/ota/check handler (httpd task) and consumed by otaAutoService() on
+// Core 0, which then runs a check immediately instead of waiting for the timer.
+volatile bool ota_check_now = false;
 String ota_esp_version, ota_esp_url, ota_esp_md5;
 String ota_stm_version, ota_stm_url, ota_stm_md5;
 bool ota_esp_available = false;

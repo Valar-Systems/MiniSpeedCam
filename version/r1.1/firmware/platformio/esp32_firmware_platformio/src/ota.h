@@ -122,10 +122,21 @@ bool otaCheckGithub() {
     filter["tag_name"] = true;
     filter["assets"][0]["name"] = true;
     filter["assets"][0]["browser_download_url"] = true;
-    JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, https.getStream(), DeserializationOption::Filter(filter));
+    // Buffer the body before parsing. Reading the (large) release JSON straight
+    // off the TLS stream is fragile -- a mid-transfer stall (seen on the check
+    // that runs right after an STM flash) surfaces as "bad API response"
+    // (IncompleteInput). getString() reads the whole body within the timeout so
+    // the parser sees it intact; the error detail makes any recurrence concrete
+    // (and is NOT an "up to date" signal).
+    String body = https.getString();
     https.end();
-    if (err) { otaSetStatus("check: bad API response"); return false; }
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, body, DeserializationOption::Filter(filter));
+    if (err) {
+      Serial.printf("[OTA] api parse failed: %s (body=%u B)\n", err.c_str(), (unsigned)body.length());
+      otaSetStatus("check: bad API response (%s)", err.c_str());
+      return false;
+    }
 
     tag = (const char*)(doc["tag_name"] | "");
     for (JsonObject a : doc["assets"].as<JsonArray>()) {
@@ -171,12 +182,18 @@ bool otaCheckGithub() {
   // a valid health signal for the post-update watchdog (otaHealthService()).
   g_cloud_ok = true;
 
-  char espinfo[44], stminfo[44];
-  if (ota_esp_available) snprintf(espinfo, sizeof espinfo, "%s->%s", FW_VERSION, ota_esp_version.c_str());
-  else                   snprintf(espinfo, sizeof espinfo, "%s ok", FW_VERSION);
-  if (ota_stm_available) snprintf(stminfo, sizeof stminfo, "%s->%s", stm_fw_version.c_str(), ota_stm_version.c_str());
-  else                   snprintf(stminfo, sizeof stminfo, "%s ok", stm_fw_version.c_str());
-  otaSetStatus("ESP %s | STM %s", espinfo, stminfo);
+  if (!ota_esp_available && !ota_stm_available) {
+    // Both current -- the common, friendly "nothing to do" result.
+    otaSetStatus("Up to date (ESP %s, STM %s)", FW_VERSION, stm_fw_version.c_str());
+  } else {
+    // Something newer is available (and about to be applied below) -- show what.
+    char espinfo[44], stminfo[44];
+    if (ota_esp_available) snprintf(espinfo, sizeof espinfo, "%s->%s", FW_VERSION, ota_esp_version.c_str());
+    else                   snprintf(espinfo, sizeof espinfo, "%s ok", FW_VERSION);
+    if (ota_stm_available) snprintf(stminfo, sizeof stminfo, "%s->%s", stm_fw_version.c_str(), ota_stm_version.c_str());
+    else                   snprintf(stminfo, sizeof stminfo, "%s ok", stm_fw_version.c_str());
+    otaSetStatus("Update available: ESP %s | STM %s", espinfo, stminfo);
+  }
   return true;
 }
 
@@ -398,15 +415,21 @@ void otaAutoService() {
 
   if (stm_flash_busy) return;
   if (WiFi.getMode() != WIFI_STA || WiFi.status() != WL_CONNECTED) return;
-  if ((long)(millis() - nextCheck) < 0) return;
 
-  // Only act when idle. Don't advance the timer if busy, so we retry promptly
-  // once the current pass/stream/upload finishes (passes last only seconds).
+  // A manual "check now" (config-page button) bypasses the interval timer; the
+  // periodic check otherwise waits for nextCheck to elapse.
+  bool manual = ota_check_now;
+  if (!manual && (long)(millis() - nextCheck) < 0) return;
+
+  // Only act when idle. Don't advance the timer or consume the manual request if
+  // busy, so it retries promptly once the current pass/stream/upload finishes
+  // (passes last only seconds).
   bool idle = !g_run_active && !stream_active &&
               (uploadQueue == nullptr || uxQueueMessagesWaiting(uploadQueue) == 0);
   if (!idle) return;
 
-  nextCheck = millis() + OTA_CHECK_INTERVAL_MS;  // schedule the next check regardless of outcome
+  ota_check_now = false;                          // consume the manual request (if any)
+  nextCheck = millis() + OTA_CHECK_INTERVAL_MS;   // schedule the next periodic check regardless of outcome
 
   if (!otaCheckGithub()) return;
 
