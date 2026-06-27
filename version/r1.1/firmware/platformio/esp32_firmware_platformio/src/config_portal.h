@@ -75,6 +75,7 @@ button.warn{background:#3a2326;color:#f87171;border:1px solid #5b2a2e}
 .big{font-size:34px;font-weight:700;text-align:center;margin:2px 0}
 .claim{text-align:center;color:var(--ok);font-weight:600;min-height:1.2em}
 .muted{color:var(--mut);font-size:12px;margin-top:6px;word-break:break-all}
+.stream{display:none;width:100%;max-width:320px;margin-top:10px;border-radius:8px;background:#000;aspect-ratio:4/3}
 .toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--ok);color:#06210f;padding:10px 16px;border-radius:8px;font-weight:600;opacity:0;transition:opacity .2s;pointer-events:none}
 .toast.show{opacity:1}
 </style>
@@ -104,7 +105,7 @@ button.warn{background:#3a2326;color:#f87171;border:1px solid #5b2a2e}
 <div class=card>
 <h2>Aiming stream</h2>
 <label class=switch><span>Live video (5 min, for mounting)</span><input type=checkbox id=streamToggle onchange=toggleStream()></label>
-<div class=muted id=streamUrl>off</div>
+<img id=streamImg class=stream alt="aiming preview">
 </div>
 
 <div class=card>
@@ -134,7 +135,7 @@ button.warn{background:#3a2326;color:#f87171;border:1px solid #5b2a2e}
 <div class=toast id=toast></div>
 
 <script>
-let filled=false;
+let filled=false,streamShown=false;
 const $=id=>document.getElementById(id);
 const txt=(id,v)=>{const e=$(id);if(e)e.textContent=v};
 function toast(m){const t=$('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),1800)}
@@ -154,7 +155,7 @@ async function refresh(){
   txt('bootCount',s.bootCount);
   txt('fwVersion',s.fwVersion);
   txt('otaStatus',s.otaStatus);
-  txt('streamUrl',s.streamUrl);
+  syncStream(s.streamActive);
   if(!filled){
     $('isKph').checked=s.isKph;
     $('powerSaver').checked=s.powerSaver;
@@ -166,7 +167,6 @@ async function refresh(){
     $('psRear').value=s.psRear;
     $('ssid').value=s.ssid;
     $('apiBase').value=s.apiBase;
-    $('streamToggle').checked=s.streamActive;
     filled=true;
   }
 }
@@ -188,7 +188,15 @@ async function clearWifi(){
   await post('/api/clear',{});
   document.body.innerHTML='<h1>Cleared. Rebooting&hellip;</h1><p class=sub>Join the MiniSpeedCam WiFi to reconfigure.</p>';
 }
-const toggleStream=()=>post('/api/stream',{on:$('streamToggle').checked});
+function syncStream(on){
+  if(on===streamShown)return;
+  const img=$('streamImg');
+  if(on){img.src='/stream?t='+Date.now();img.style.display='block'}
+  else{img.style.display='none';img.removeAttribute('src')}
+  $('streamToggle').checked=on;
+  streamShown=on;
+}
+const toggleStream=async()=>{await post('/api/stream',{on:$('streamToggle').checked});syncStream($('streamToggle').checked)};
 refresh();
 setInterval(refresh,1000);
 </script>
@@ -224,9 +232,7 @@ static void portalBuildState(String& out) {
   doc["otaStatus"]   = ota_status;
   doc["claim"]       = device_claimed ? String("Linked to your account") : claim_code;
 
-  String sip = (WiFi.getMode() == WIFI_STA) ? WiFi.localIP().toString() : WiFi.softAPIP().toString();
-  doc["streamActive"] = (bool)stream_active;
-  doc["streamUrl"]    = stream_active ? (String("http://") + sip + ":" + STREAM_PORT + "/") : String("off");
+  doc["streamActive"] = (bool)stream_active;  // page embeds /stream inline on this same server
 
   // --- current settings (populate the form once, on first load) ---
   doc["isKph"]       = is_kph;
@@ -401,8 +407,11 @@ static httpd_handle_t config_httpd = NULL;
 void load_config_portal(void) {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port      = 80;
-  config.ctrl_port        = 32768;  // default; the aiming-stream httpd uses 32769
-  config.max_open_sockets = 4;
+  config.ctrl_port        = 32768;  // default
+  // Room for the long-lived async /stream socket alongside the page's ~1 Hz
+  // /api/state polls; the old separate :81 stream server is gone (its sockets
+  // freed), so this single server can afford more open sockets.
+  config.max_open_sockets = 7;
   config.max_uri_handlers = 8;
   config.lru_purge_enable = true;
   config.stack_size       = 8192;   // headroom for ArduinoJson + String building
@@ -424,6 +433,10 @@ void load_config_portal(void) {
   httpd_register_uri_handler(config_httpd, &u_wifi);
   httpd_register_uri_handler(config_httpd, &u_clear);
   httpd_register_uri_handler(config_httpd, &u_stream);
+
+  // The aiming MJPEG stream shares this same server (GET /stream), shown inline
+  // in a small window on the config page. See camera_stream.cpp.
+  streamRegisterHandler(config_httpd);
 
   String ip = (WiFi.getMode() == WIFI_STA) ? WiFi.localIP().toString() : WiFi.softAPIP().toString();
   Serial.printf("[PORTAL] config page at http://%s/\n", ip.c_str());
