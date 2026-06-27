@@ -85,7 +85,6 @@ button.warn{background:#3a2326;color:#f87171;border:1px solid #5b2a2e}
 <div class=sub>Device configuration</div>
 
 <div class=card>
-<div class=big id=speed>&mdash;</div>
 <div class=claim id=claim>&mdash;</div>
 </div>
 
@@ -142,7 +141,6 @@ function toast(m){const t=$('toast');t.textContent=m;t.classList.add('show');set
 async function refresh(){
   let s;
   try{s=await(await fetch('/api/state')).json()}catch(e){return}
-  txt('speed',s.speed+' '+s.units);
   txt('claim',s.claim);
   txt('signal',s.signal);
   txt('heap',s.heap);
@@ -217,8 +215,9 @@ static void portalBuildState(String& out) {
 
   JsonDocument doc;
   // --- live values (refreshed by the page poll) ---
-  doc["speed"]       = speed;
-  doc["units"]       = is_kph ? "KPH" : "MPH";
+  // Speed readout removed from the page: showing live speed while aiming is
+  // misleading (the radar is meant for passing traffic, not bench checks) and
+  // the per-second poll's WiFi TX disturbs the shared-rail radar anyway.
   doc["signal"]      = g_last_peak_mag;
   doc["heap"]        = ESP.getFreeHeap();
   doc["psram"]       = ESP.getFreePsram();
