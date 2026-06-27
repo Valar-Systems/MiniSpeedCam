@@ -129,6 +129,7 @@ button.warn{background:#3a2326;color:#f87171;border:1px solid #5b2a2e}
 <div class=row><span class=k>Boot count</span><span class=v id=bootCount>&mdash;</span></div>
 <div class=row><span class=k>Firmware</span><span class=v id=fwVersion>&mdash;</span></div>
 <div class=row><span class=k>Update status</span><span class=v id=otaStatus>&mdash;</span></div>
+<button onclick=checkUpdate()>Check for updates now</button>
 </div>
 
 <div class=toast id=toast></div>
@@ -185,6 +186,10 @@ async function clearWifi(){
   if(!confirm('Erase WiFi credentials and reboot into the setup AP?'))return;
   await post('/api/clear',{});
   document.body.innerHTML='<h1>Cleared. Rebooting&hellip;</h1><p class=sub>Join the MiniSpeedCam WiFi to reconfigure.</p>';
+}
+async function checkUpdate(){
+  await post('/api/ota/check',{});
+  toast('Checking GitHub for updates...');
 }
 function syncStream(on){
   if(on===streamShown)return;
@@ -401,6 +406,16 @@ static esp_err_t portalStreamPost(httpd_req_t* req) {
   return httpd_resp_sendstr(req, "{\"ok\":true}");
 }
 
+// POST /api/ota/check -> request an immediate GitHub update check. Only sets the
+// flag; taskCore0's otaAutoService() runs the check (and applies any newer image)
+// the next time it's idle, bypassing the periodic timer. The result appears in
+// the "Update status" line the page already polls.
+static esp_err_t portalOtaCheckPost(httpd_req_t* req) {
+  ota_check_now = true;
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_sendstr(req, "{\"ok\":true}");
+}
+
 static httpd_handle_t config_httpd = NULL;
 
 /**
@@ -417,7 +432,7 @@ void load_config_portal(void) {
   // /api/state polls; the old separate :81 stream server is gone (its sockets
   // freed), so this single server can afford more open sockets.
   config.max_open_sockets = 7;
-  config.max_uri_handlers = 8;
+  config.max_uri_handlers = 10;
   config.lru_purge_enable = true;
   config.stack_size       = 8192;   // headroom for ArduinoJson + String building
 
@@ -432,12 +447,14 @@ void load_config_portal(void) {
   httpd_uri_t u_wifi   = { .uri = "/api/wifi",     .method = HTTP_POST, .handler = portalWifiPost,     .user_ctx = NULL };
   httpd_uri_t u_clear  = { .uri = "/api/clear",    .method = HTTP_POST, .handler = portalClearPost,    .user_ctx = NULL };
   httpd_uri_t u_stream = { .uri = "/api/stream",   .method = HTTP_POST, .handler = portalStreamPost,   .user_ctx = NULL };
+  httpd_uri_t u_otachk = { .uri = "/api/ota/check",.method = HTTP_POST, .handler = portalOtaCheckPost, .user_ctx = NULL };
   httpd_register_uri_handler(config_httpd, &u_root);
   httpd_register_uri_handler(config_httpd, &u_state);
   httpd_register_uri_handler(config_httpd, &u_set);
   httpd_register_uri_handler(config_httpd, &u_wifi);
   httpd_register_uri_handler(config_httpd, &u_clear);
   httpd_register_uri_handler(config_httpd, &u_stream);
+  httpd_register_uri_handler(config_httpd, &u_otachk);
 
   // The aiming MJPEG stream shares this same server (GET /stream), shown inline
   // in a small window on the config page. See camera_stream.cpp.
