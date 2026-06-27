@@ -55,7 +55,7 @@ String stm_fw_version = "unknown";
 // Power-Saver Mode (persisted in NVS). When true the radar loop drops WiFi
 // during the idle/sleep windows to save power; when false the device never
 // sleeps and WiFi stays up (handy for keeping the web UI reachable). Written
-// by the ESPUI callback task, read by taskCore1, hence volatile.
+// by the config portal's HTTP handler task, read by taskCore1, hence volatile.
 volatile bool power_saver;
 
 volatile bool connect_wifi;  // Core 1 -> Core 0: please attempt a WiFi (re)connect
@@ -79,7 +79,7 @@ volatile bool g_cloud_ok = false;
 volatile bool ap_fallback_mode = false;
 
 // --- Aiming video stream (temporary setup/mounting tool) ---
-// Desired state is toggled from the ESPUI switcher (and cleared by the auto-off
+// Desired state is toggled from POST /api/stream (and cleared by the auto-off
 // timeout); taskCore1's streamService() reconciles it against the real server.
 volatile bool stream_active = false;    // true = aiming MJPEG stream should be running
 volatile unsigned long stream_deadline; // millis() at which the stream auto-stops
@@ -202,12 +202,9 @@ String payload;              // Last HTTPS response body (debug)
 int httpsResponseCode;       // Last HTTPS status code
 String httpsRequestData;     // Request-body buffer used by sendLocalIP()
 
-// --- ESPUI control handles ---
-uint16_t wifi_ssid_text, wifi_pass_text;  // ESPUI text inputs for WiFi credentials
-uint16_t wifi_server_text;                // ESPUI text input for the API base URL (data destination)
-uint16_t labelSpeed;         // ESPUI label showing the live speed reading
-uint16_t labelStream;        // ESPUI label showing the aiming-stream URL (or "off")
-uint16_t aimingSwitchId;     // ESPUI switcher handle, so streamStop() can flip it off on auto-off
+// The web config portal (config_portal.h) is stateless: it serves settings +
+// live values from these globals on demand (GET /api/state) and writes them
+// back via POST handlers, so there are no per-control UI handles to track.
 String local_ip_address;     // Most recent station-mode IP (sent to the cloud)
 
 // Captive-DNS config for AP mode. NOTE: dnsServer.start() is never called

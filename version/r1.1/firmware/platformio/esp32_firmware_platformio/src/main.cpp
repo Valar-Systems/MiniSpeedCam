@@ -9,11 +9,11 @@
  *   - When speed crosses the user-configured threshold, captures a JPEG
  *     from the OV2640 camera and POSTs it (base64-encoded) along with
  *     the maximum measured speed to minispeedcam.com.
- *   - Hosts an ESPUI web UI (over WiFi STA, or a captive AP if no
- *     credentials are stored) for configuring WiFi, units (MPH/KPH),
- *     minimum tracking speed, and photo trigger speed.
+ *   - Hosts a self-hosted web config portal (esp_http_server on :80, over
+ *     WiFi STA or a captive AP if no credentials are stored) for configuring
+ *     WiFi, units (MPH/KPH), minimum tracking speed, and photo trigger speed.
  *   - Implements a two-task split across the dual-core ESP32:
- *       Core 1 (Task1) - radar polling, sleep management, ESPUI/DNS.
+ *       Core 1 (Task1) - radar polling, sleep management, DNS.
  *       Core 0 (Task0) - HTTPS uploads and (re)connecting to WiFi.
  *
  * PlatformIO port of esp32_firmware/esp32_firmware.ino. The module
@@ -22,8 +22,9 @@
  * tabs), so behaviour is identical to the original sketch.
  *
  * Required libraries (see platformio.ini lib_deps):
- *   - Async TCP 3.3.8
- *   - ESPUI    2.2.4
+ *   - ArduinoJson (config-portal /api/state + OTA manifest parsing)
+ * The web config portal and aiming-stream server both use the IDF-native
+ * esp_http_server (no ESPAsyncWebServer / AsyncTCP).
  */
 
 #include <Arduino.h>
@@ -33,7 +34,6 @@
 #include <esp_camera.h>
 #include <DNSServer.h>
 #include <ESPmDNS.h>
-#include <ESPUI.h>
 #include <Preferences.h>
 
 #include "soc/soc.h"           // Disable brownout problems
@@ -66,9 +66,9 @@ Preferences preferences;  // NVS-backed key/value store for WiFi creds and user 
 #include "api.h"
 #include "stm32boot.h"
 #include "ota.h"
-#include "espui_settings.h"
+#include "config_portal.h"
 
-DNSServer dnsServer;  // Captive-DNS used in AP mode so any URL hits the ESPUI portal
+DNSServer dnsServer;  // Captive-DNS used in AP mode so any URL hits the config portal
 
 TaskHandle_t Task0;  // Handle for the Core 0 task (HTTPS uploads / WiFi reconnect)
 TaskHandle_t Task1;  // Handle for the Core 1 task (radar polling / sleep / DNS)
@@ -77,18 +77,11 @@ TaskHandle_t Task1;  // Handle for the Core 1 task (radar polling / sleep / DNS)
 void taskCore0(void* parameter);
 void taskCore1(void* parameter);
 
-// --- Aiming-stream <-> ESPUI bridge -----------------------------------------
-// The MJPEG stream server lives in its own translation unit (camera_stream.cpp)
-// because esp_http_server and ESPUI's ESPAsyncWebServer can't share a file
-// (clashing HTTP_* enums). It reports start/stop through these callbacks so the
-// ESPUI label/switcher (an ESPUI concern, kept here) stay in sync.
-static void onStreamStarted(const char* url) {
-  ESPUI.updateLabel(labelStream, String(url));
-}
-static void onStreamStopped() {
-  ESPUI.updateLabel(labelStream, "off");
-  ESPUI.updateSwitcher(aimingSwitchId, false);  // reflect auto-off in the web UI
-}
+// The aiming MJPEG stream server lives in its own translation unit
+// (camera_stream.cpp). Its desired state is the shared stream_active/
+// stream_deadline flags (set by POST /api/stream), and the config page reports
+// the live stream URL/state by polling GET /api/state -- so the stream module
+// needs no start/stop callbacks wired here anymore.
 
 // --- Crash diagnostics ------------------------------------------------------
 // The panic handler saves a core dump to the flash 'coredump' partition on every
@@ -130,7 +123,7 @@ static void reportLastCrash() {
  *
  * Initializes peripherals, restores user settings from NVS, brings the
  * STM32 radar out of reset, joins WiFi (or starts the configuration AP),
- * launches the ESPUI web UI, and finally pins the two work loops to
+ * launches the web config portal, and finally pins the two work loops to
  * separate cores so radar polling never blocks on HTTPS uploads.
  */
 void setup() {
@@ -225,12 +218,8 @@ void setup() {
     Serial.printf("[WIFI] AP ip=%s\n", WiFi.softAPIP().toString().c_str());
   }
 
-  // Load ESPUI elements
-  load_espui();
-
-  // Wire the stream module's start/stop notifications to the ESPUI UI now that
-  // the controls (labelStream / aimingSwitchId) exist.
-  streamSetCallbacks(onStreamStarted, onStreamStopped);
+  // Start the self-hosted config portal (esp_http_server on :80). Replaces ESPUI.
+  load_config_portal();
 
   // Send local IP address to API if connected to internet
   sendLocalIP();
@@ -306,10 +295,10 @@ const int SPEED_CONFIRM_COUNT = 2;
 const int PHOTO_PEAK_DROP_PCT = 70;
 
 /**
- * Core 1 task: radar polling, sleep policy, and ESPUI/DNS servicing.
+ * Core 1 task: radar polling, sleep policy, and captive-DNS servicing.
  *
  * Each iteration:
- *   1. Services one captive-DNS request so the ESPUI page resolves.
+ *   1. Services one captive-DNS request so the config page resolves.
  *   2. Releases the post-startup "ignore" window after 5s.
  *   3. Polls the STM32 for the latest speed (in MPH or KPH per user setting).
  *   4. Manages two sleep/idle paths (post-boot grace, and 5s of no radar).
@@ -322,7 +311,7 @@ const int PHOTO_PEAK_DROP_PCT = 70;
 void taskCore1(void* parameter) {  // Code for task running on Core 1
   while (1) {                      // Loop indefinitely
 
-    dnsServer.processNextRequest();  // Process request for ESPUI
+    dnsServer.processNextRequest();  // Process captive-DNS request for the config portal
 
     streamService();  // start/stop the aiming MJPEG stream + enforce its auto-off timeout
 
@@ -354,15 +343,11 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
       speed = get_speed(false);  // Get speed (MPH) from STM32 via UART
     }
 
-    // While the aiming stream runs, DON'T push ESPUI label updates: each one is
-    // a WebSocket broadcast over AsyncTCP (:80), and under the stream's WiFi/LWIP
-    // saturation that send blocks -- hanging this whole task (the ~30s freeze:
-    // radar, serial, stream AND ESPUI all stop until TCP times out). The live
-    // labels aren't needed while aiming; they resume when the stream stops.
-    if (!stream_active) {
-      updateSpeedDisplay();   // push the live reading to the ESPUI "Current Speed" label
-      updateStatusDisplay();  // refresh the ESPUI Status tab (~1 Hz, self-throttled)
-    }
+    // No server-side display push here: the config page pulls live readouts
+    // (speed, signal, heap, ...) by polling GET /api/state ~1 Hz. This is what
+    // removing ESPUI bought us -- the old per-loop WebSocket broadcast over
+    // AsyncTCP is exactly what blocked this task and froze the device (~30s:
+    // radar, serial, stream all stalled until TCP timed out) under stream load.
 
     // Echo the live speed to the serial monitor, throttled to ~1 Hz so the
     // fast radar-poll loop doesn't flood the console.
@@ -517,7 +502,7 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
 
         while (speed >= min_speed) {  // Track the car's maximum speed over the whole pass.
           speed = get_speed(is_kph);  // Get speed (KPH or MPH per setting) from STM32 via UART
-          updateSpeedDisplay();       // keep the ESPUI readout live during the pass
+          // (live readout is served on demand via GET /api/state; nothing to push here)
 
           if (speed > maxSpeed) {
             maxSpeed = speed;

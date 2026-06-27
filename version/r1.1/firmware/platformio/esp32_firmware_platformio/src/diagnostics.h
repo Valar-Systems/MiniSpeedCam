@@ -4,7 +4,7 @@
  * Header-only port of r1.2's diagnostics module (minus the offline-queue
  * depth, which r1.1 doesn't have). Records the reset reason and an
  * NVS-backed boot counter, tracks the most recent upload's HTTP status, and
- * formats uptime for the ESPUI Status tab.
+ * formats uptime for the config portal's Status section.
  *
  * diagnosticsLogBoot() must be called once in setup(), AFTER
  * preferences.begin() (it reads/writes the shared `preferences` instance).
