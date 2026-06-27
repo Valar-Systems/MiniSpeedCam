@@ -90,23 +90,29 @@ static void applyTlsPolicy(WiFiClientSecure& client) {
   }
 }
 
+// The ESP-IDF Mozilla root-CA bundle (esp_crt_bundle), embedded by the Arduino
+// framework when CONFIG_MBEDTLS_CERTIFICATE_BUNDLE is enabled (default). Linked
+// symbol; declared here so the GitHub update path can validate against the full
+// public trust store rather than one hand-pinned root.
+extern const uint8_t rootca_crt_bundle_start[] asm("_binary_x509_crt_bundle_start");
+extern const uint8_t rootca_crt_bundle_end[]   asm("_binary_x509_crt_bundle_end");
+
 /**
  * TLS trust policy for the GitHub auto-update path (ota.h).
  *
- * Pins the GitHub root bundle (config.h / GITHUB_CA_ROOT_CERT) so the whole
- * update path is authenticated: api.github.com (release metadata) and the
- * *.githubusercontent.com asset hosts (manifest.json + the .bin downloads) chain
- * to different roots, both in the bundle, and HTTPClient keeps this same client
- * across the github.com -> githubusercontent.com asset redirect, so one policy
- * validates every hop. Falls back to setInsecure() if the bundle was overridden
- * to empty (the binary is MD5-verified regardless, see ota.h).
+ * Validates against the full Mozilla root-CA bundle, NOT a single pinned root.
+ * GitHub rotates its CA, and a single pin breaks the whole update path on the
+ * next rotation with MBEDTLS_ERR_X509_CERT_VERIFY_FAILED (tls -0x2700) -- which
+ * is exactly what bricked the auto-update in the field. The bundle covers
+ * api.github.com (release metadata) and the *.githubusercontent.com asset hosts
+ * (manifest.json + .bin downloads), across the github.com -> githubusercontent
+ * redirect HTTPClient follows on one client, and survives future CA rotations.
+ * Still REAL certificate validation (not setInsecure): the firmware-update path
+ * needs it, because the .bin's trusted MD5 is read from the TLS-fetched manifest.
  */
 static void applyTlsPolicyGitHub(WiFiClientSecure& client) {
-  if (kGithubCaRootCert != nullptr && kGithubCaRootCert[0] != '\0') {
-    client.setCACert(kGithubCaRootCert);
-  } else {
-    client.setInsecure();
-  }
+  client.setCACertBundle(rootca_crt_bundle_start,
+                         (size_t)(rootca_crt_bundle_end - rootca_crt_bundle_start));
 }
 
 /**

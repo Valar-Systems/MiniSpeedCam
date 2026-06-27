@@ -105,7 +105,18 @@ bool otaCheckGithub() {
     https.addHeader("User-Agent", "MiniSpeedCam-OTA");          // GitHub 403s a missing UA
     https.addHeader("Accept", "application/vnd.github+json");
     int code = https.GET();
-    if (code != 200) { otaSetStatus("check: API HTTP %d", code); https.end(); return false; }
+    if (code != 200) {
+      if (code < 0) {  // negative = TLS/socket failure, not an HTTP status -- surface why
+        char tlsbuf[64] = "";
+        int tlserr = client.lastError(tlsbuf, sizeof(tlsbuf));
+        Serial.printf("[OTA] github connect failed: code=%d tls=-0x%04x (%s)\n", code, -tlserr, tlsbuf);
+        otaSetStatus("check: API HTTP %d (tls -0x%04x)", code, -tlserr);
+      } else {
+        otaSetStatus("check: API HTTP %d", code);
+      }
+      https.end();
+      return false;
+    }
 
     JsonDocument filter;
     filter["tag_name"] = true;
