@@ -1,29 +1,29 @@
 /**
- * camera_stream.cpp - MJPEG "aiming" video stream server (see camera_stream.h).
+ * camera_stream.cpp - MJPEG "aiming" video stream (see camera_stream.h).
  *
- * Spins up a lightweight esp_http_server on port 81 that serves a live MJPEG
- * feed from the OV2640 so the installer can frame the device on a phone
- * (open http://<device-ip>:81/). It is a setup aid only: while active the
- * radar/photo path is paused (taskCore1 gates on stream_active) and WiFi is
- * kept up, and it auto-stops after STREAM_TIMEOUT_MS.
+ * Serves a live MJPEG feed from the OV2640 at GET /stream so the installer can
+ * frame the device while mounting it -- shown inline in a small window on the
+ * config page. It shares the config portal's esp_http_server on port 80 rather
+ * than running a second server/port; to keep that single-task server responsive
+ * while the (never-ending) video streams, the response runs as an
+ * esp_http_server ASYNC handler on its own task (stream_task).
  *
- * Compiled as its own translation unit so it never includes variables.h (which
- * *defines* the shared globals -- including it here would multiply those
- * definitions). The two desired-state flags are reached by extern. (Before the
- * ESPUI removal this split was also forced by an esp_http_server vs
- * ESPAsyncWebServer HTTP_* enum clash; that's gone now, but the isolation is
- * still worth keeping.)
+ * Setup aid only: while a viewer is connected, taskCore1 pauses the radar/photo
+ * path (it gates on stream_active / streamBusy()) and the streaming task drops
+ * the sensor to VGA; on exit it restores UXGA for full-res speed photos. The
+ * stream auto-stops after STREAM_TIMEOUT_MS.
+ *
+ * Kept in its own translation unit (free of variables.h) so it can't multiply-
+ * define the shared globals -- the two desired-state flags are reached by extern.
  */
 #include "camera_stream.h"
 
 #include <Arduino.h>
-#include <WiFi.h>
 #include <string.h>
 #include "esp_camera.h"
-#include "esp_http_server.h"
 
-// Desired-state flags owned by variables.h (set by POST /api/stream, read
-// across the app). Reached by extern so this TU never includes variables.h.
+// Desired-state flags owned by variables.h (set by POST /api/stream). Reached
+// by extern so this TU never includes variables.h.
 extern volatile bool stream_active;
 extern volatile unsigned long stream_deadline;
 
@@ -32,33 +32,28 @@ static const char* STREAM_CONTENT_TYPE = "multipart/x-mixed-replace;boundary=" S
 static const char* STREAM_BOUNDARY = "\r\n--" STREAM_BOUNDARY_ID "\r\n";
 static const char* STREAM_PART = "Content-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n";
 
-static httpd_handle_t stream_httpd = NULL;
-static bool stream_running = false;  // actual server state (reconciled against stream_active)
+// Non-NULL while a viewer is being streamed to (one viewer at a time). Set by
+// the httpd task when it spawns stream_task, cleared by stream_task on exit.
+static volatile TaskHandle_t stream_task_handle = NULL;
 
-// Minimal phone-friendly page that shows the live feed full width.
-static esp_err_t stream_index_handler(httpd_req_t* req) {
-  static const char* page =
-    "<!doctype html><html><head><meta name=viewport "
-    "content='width=device-width,initial-scale=1'><title>MiniSpeedCam Aim</title></head>"
-    "<body style='margin:0;background:#000'>"
-    "<img src='/stream' style='width:100%;height:auto;display:block'></body></html>";
-  httpd_resp_set_type(req, "text/html");
-  return httpd_resp_send(req, page, strlen(page));
-}
+bool streamBusy(void) { return stream_task_handle != NULL; }
 
-// MJPEG multipart stream. Runs in the httpd server task; loops until the
-// client disconnects (a chunk send fails).
-static esp_err_t stream_mjpeg_handler(httpd_req_t* req) {
+// Async streaming task: owns the camera frame size for its lifetime (VGA in,
+// UXGA out) and pushes JPEG frames until the stream is turned off (toggle or
+// auto-off clears stream_active) or the client disconnects.
+static void stream_task(void* arg) {
+  httpd_req_t* req = (httpd_req_t*)arg;
+
+  sensor_t* s = esp_camera_sensor_get();
+  if (s) s->set_framesize(s, FRAMESIZE_VGA);  // smooth video while aiming
+  Serial.println("[STREAM] viewer started (async); camera -> VGA");
+
   esp_err_t res = httpd_resp_set_type(req, STREAM_CONTENT_TYPE);
-  if (res != ESP_OK) return res;
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  if (res == ESP_OK) httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 
-  // Pace the stream. The old freeze was taskCore1's per-loop ESPUI WebSocket
-  // broadcasts blocking on AsyncTCP under streaming load -- removed entirely with
-  // ESPUI (the config page now polls), NOT stream bandwidth. ~10 fps is fine.
   const TickType_t frame_interval = pdMS_TO_TICKS(100);  // ~10 fps
   char part_buf[64];
-  while (true) {
+  while (res == ESP_OK && stream_active) {
     camera_fb_t* fb = esp_camera_fb_get();
     if (!fb) { res = ESP_FAIL; break; }
 
@@ -72,66 +67,57 @@ static esp_err_t stream_mjpeg_handler(httpd_req_t* req) {
     }
     esp_camera_fb_return(fb);
 
-    if (res != ESP_OK) break;  // client gone
-
-    vTaskDelay(frame_interval);  // pace + yield CPU to Wi-Fi / AsyncTCP / radar
+    if (res != ESP_OK) break;     // client gone
+    vTaskDelay(frame_interval);   // pace + yield CPU to Wi-Fi / radar
   }
-  return res;
+
+  httpd_resp_send_chunk(req, NULL, 0);    // terminate the multipart response
+  httpd_req_async_handler_complete(req);  // release the borrowed socket
+
+  if (s) s->set_framesize(s, FRAMESIZE_UXGA);  // restore full-res for speed photos
+  Serial.println("[STREAM] viewer ended; camera -> UXGA");
+
+  stream_task_handle = NULL;
+  vTaskDelete(NULL);
 }
 
-// Start the stream server and switch the sensor to VGA for a smooth feed.
-static void streamStart() {
-  if (stream_running) return;
-
-  sensor_t* s = esp_camera_sensor_get();
-  if (s) s->set_framesize(s, FRAMESIZE_VGA);  // smooth video while aiming
-
-  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-  config.server_port = STREAM_PORT;
-  config.ctrl_port = 32769;       // distinct from the default httpd control port
-  config.max_open_sockets = 2;    // keep socket pressure low alongside the config-portal httpd (:80)
-  config.max_uri_handlers = 2;
-
-  if (httpd_start(&stream_httpd, &config) == ESP_OK) {
-    httpd_uri_t index_uri  = { .uri = "/",       .method = HTTP_GET, .handler = stream_index_handler, .user_ctx = NULL };
-    httpd_uri_t stream_uri = { .uri = "/stream", .method = HTTP_GET, .handler = stream_mjpeg_handler,  .user_ctx = NULL };
-    httpd_register_uri_handler(stream_httpd, &index_uri);
-    httpd_register_uri_handler(stream_httpd, &stream_uri);
-    stream_running = true;
-
-    String ip = (WiFi.getMode() == WIFI_STA) ? WiFi.localIP().toString() : WiFi.softAPIP().toString();
-    String url = "http://" + ip + ":" + STREAM_PORT + "/";
-    Serial.printf("[STREAM] started at %s (auto-off in %lus)\n", url.c_str(), STREAM_TIMEOUT_MS / 1000);
-  } else {
-    Serial.println("[STREAM] httpd_start FAILED");
-    if (s) s->set_framesize(s, FRAMESIZE_UXGA);  // restore on failure
-    stream_active = false;
+// GET /stream handler (runs on the httpd task). Hands the long-lived MJPEG
+// response off to stream_task via the async API so the shared :80 server stays
+// responsive, then returns immediately.
+static esp_err_t stream_mjpeg_handler(httpd_req_t* req) {
+  if (!stream_active) {                 // stream not enabled -- don't touch the camera
+    httpd_resp_set_status(req, "503 Service Unavailable");
+    return httpd_resp_send(req, "stream off", HTTPD_RESP_USE_STRLEN);
   }
+  if (stream_task_handle != NULL) {     // one viewer at a time
+    httpd_resp_set_status(req, "503 Service Unavailable");
+    return httpd_resp_send(req, "stream busy", HTTPD_RESP_USE_STRLEN);
+  }
+
+  httpd_req_t* copy = NULL;
+  if (httpd_req_async_handler_begin(req, &copy) != ESP_OK) return ESP_FAIL;
+
+  if (xTaskCreate(stream_task, "mjpeg", 4096, copy, 5,
+                  (TaskHandle_t*)&stream_task_handle) != pdPASS) {
+    Serial.println("[STREAM] task create FAILED");
+    httpd_req_async_handler_complete(copy);
+    stream_task_handle = NULL;
+    return ESP_FAIL;
+  }
+  return ESP_OK;  // free the httpd task; stream_task owns `copy` now
 }
 
-// Stop the stream server and restore the sensor to UXGA for speed photos.
-static void streamStop() {
-  if (!stream_running) return;
-  httpd_stop(stream_httpd);
-  stream_httpd = NULL;
-  stream_running = false;
-
-  sensor_t* s = esp_camera_sensor_get();
-  if (s) s->set_framesize(s, FRAMESIZE_UXGA);  // back to full-res for speed photos
-
-  Serial.println("[STREAM] stopped; camera restored to UXGA");
+void streamRegisterHandler(httpd_handle_t server) {
+  httpd_uri_t stream_uri = { .uri = "/stream", .method = HTTP_GET,
+                             .handler = stream_mjpeg_handler, .user_ctx = NULL };
+  httpd_register_uri_handler(server, &stream_uri);
 }
 
-// Reconcile desired (stream_active) vs actual server state, and enforce the
-// auto-off timeout. Call from taskCore1 each loop.
-void streamService() {
+// Enforce the 5-minute auto-off. The streaming task watches stream_active and
+// stops (restoring UXGA) on its own once this clears it. Runs on taskCore1.
+void streamService(void) {
   if (stream_active && (long)(millis() - stream_deadline) >= 0) {
-    stream_active = false;  // timeout elapsed
+    stream_active = false;
     Serial.println("[STREAM] auto-off (timeout)");
-  }
-  if (stream_active && !stream_running) {
-    streamStart();
-  } else if (!stream_active && stream_running) {
-    streamStop();
   }
 }

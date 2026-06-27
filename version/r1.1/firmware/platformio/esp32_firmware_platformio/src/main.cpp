@@ -313,13 +313,15 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
 
     dnsServer.processNextRequest();  // Process captive-DNS request for the config portal
 
-    streamService();  // start/stop the aiming MJPEG stream + enforce its auto-off timeout
+    streamService();  // enforce the aiming-stream 5-minute auto-off timeout
 
     // While the aiming stream is up, skip all measurement work below: the radar
     // reads are meaningless (and WiFi-TX-corrupted) during aiming, and keeping
-    // taskCore1 quiet here frees the radio/CPU for a smooth stream. The short
-    // yield replaces get_speed()'s usual loop pacing so we don't busy-spin.
-    if (stream_active) {
+    // taskCore1 quiet here frees the radio/CPU for a smooth stream. streamBusy()
+    // keeps us off the camera until the streaming task has fully exited and
+    // restored the sensor to UXGA, so a speed photo can't race the frame-size
+    // switch. The short yield replaces get_speed()'s usual loop pacing.
+    if (stream_active || streamBusy()) {
       vTaskDelay(pdMS_TO_TICKS(20));
       continue;
     }
