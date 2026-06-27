@@ -12,7 +12,7 @@ the PlatformIO firmwares in this folder:
 | MCU | Part | Responsibility |
 |-----|------|----------------|
 | **STM32** | STM32F301K8U6 (Cortex-M4F, 64 KB Flash / 16 KB RAM) | Samples the CDM324 Doppler radar's analog output, runs an FFT, and reports the detected speed. Nothing else — no WiFi, no camera. |
-| **ESP32** | ESP32-S3-WROOM-1U | Master controller: polls the STM32 for speed, drives the OV2640 camera, hosts the ESPUI web config, manages WiFi/sleep, and uploads photos + speed to the cloud. |
+| **ESP32** | ESP32-S3-WROOM-1U | Master controller: polls the STM32 for speed, drives the OV2640 camera, hosts the web config portal, manages WiFi/sleep, and uploads photos + speed to the cloud. |
 
 The STM32 is a **slave "speed oracle."** The ESP32 is the master: it resets the
 STM32, polls it, and acts on the results.

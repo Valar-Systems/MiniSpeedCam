@@ -28,7 +28,8 @@ esp32_firmware_platformio/
     ├── radar.h             UART protocol with the STM32 radar MCU
     ├── api.h               WiFi bring-up + streaming HTTPS upload to minispeedcam.com
     ├── diagnostics.h       Reset reason / boot count / uptime / last-upload code
-    └── espui_settings.h    Web-UI controls (Device / Wifi / Status tabs) + NVS persistence
+    ├── camera_stream.h/.cpp  Temporary MJPEG "aiming" stream (esp_http_server on :81)
+    └── config_portal.h     Self-hosted web config page (esp_http_server on :80) + JSON API + NVS persistence
 ```
 
 ## Build / flash
@@ -58,14 +59,15 @@ uncomment the `ARDUINO_USB_MODE=1` and `ARDUINO_USB_CDC_ON_BOOT=1` lines in
 
 Pulled automatically via `lib_deps`:
 
-- `s00500/ESPUI @ 2.2.4` - web configuration portal
-- `esp32async/AsyncTCP @ 3.3.8` - async networking (ESPUI dependency)
+- `bblanchon/ArduinoJson @ ^7.2.0` - config portal `/api/state` JSON + POST bodies, and the OTA manifest
 
-`esp_camera`, `WiFi`, `WiFiClientSecure`, `HTTPClient`, `Preferences`,
+`esp_camera`, `esp_http_server` (both HTTP servers — config portal :80 and
+aiming stream :81), `WiFi`, `WiFiClientSecure`, `HTTPClient`, `Preferences`,
 `ESPmDNS`, `DNSServer`, and `SPIFFS` are provided by the `espressif32`
 platform's Arduino framework and need no entry. The JPEG is base64-encoded
 with the core's `base64::encode()` (`cores/esp32/base64.h`), so no base64
-library is required either.
+library is required either. There is no ESPUI / ESPAsyncWebServer / AsyncTCP
+dependency — the config page is hand-rolled HTML served from flash.
 
 ## Configuration
 
@@ -120,19 +122,25 @@ while Core 0 is still streaming the previous one.
 
 ## Web UI
 
-ESPUI portal at the device's IP (`MiniSpeedCam.local` over mDNS):
+Self-hosted config page at the device's IP (`MiniSpeedCam.local` over mDNS),
+served from flash by `esp_http_server` on port 80 (`config_portal.h`):
 
-- **Device** — live Current Speed readout (updated ~3 Hz from the radar task),
-  MPH/KPH switch, Power-Saver Mode switch (drop WiFi when idle vs. never sleep),
-  minimum speed, photo speed.
-- **Wifi Settings** — Network SSID / password, Camera ID, Clear Settings, Save
-  Settings (reboots).
-- **Status** — live diagnostics refreshed ~1 Hz: current speed, free heap and
-  PSRAM, uptime, WiFi RSSI and IP, last upload HTTP code, last reset reason,
-  boot count.
+- **Device** — live Current Speed readout, MPH/KPH switch, Power-Saver Mode
+  switch (drop WiFi when idle vs. never sleep), minimum speed, photo speed, and
+  the proximity/photo-signal thresholds.
+- **Aiming stream** — toggle the temporary MJPEG video feed (port 81) for
+  mounting.
+- **WiFi & data server** — Network SSID / password, Data Server API base URL,
+  Save (reboots), Clear Settings (reboots into the setup AP).
+- **Status** — live diagnostics: signal (proximity), free heap and PSRAM,
+  uptime, WiFi RSSI and IP, last upload HTTP code, last reset reason, boot
+  count, firmware versions, and OTA status.
 
-All label updates are pushed from `taskCore1` so a single task owns the ESPUI
-WebSocket (the upload task on Core 0 never touches it).
+There is no server-side push: the page polls `GET /api/state` (~1 Hz) for all
+live values and writes settings back via small JSON `POST` endpoints
+(`/api/settings`, `/api/wifi`, `/api/clear`, `/api/stream`). That replaced the
+old ESPUI WebSocket broadcast from `taskCore1`, whose AsyncTCP send blocked the
+radar task and froze the device under WiFi/stream load.
 
 ## Power management
 

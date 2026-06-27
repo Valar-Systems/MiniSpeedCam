@@ -9,14 +9,14 @@
  *
  * Provides:
  *   - connectWifiAP():   first-boot bring-up; tries STA, otherwise opens
- *                        a "MiniSpeedCam" soft-AP for the captive ESPUI.
+ *                        a "MiniSpeedCam" soft-AP for the captive config portal.
  *   - connectWifi():     reconnect helper used by Core 0 when the radar
  *                        wakes the device and STA is dropped.
  *   - disconnectWifi():  cleanly tear down WiFi (used during sleep paths).
  *   - wifiResetButton(): 3-second long-press on WIFI_RESET_PIN clears
  *                        stored credentials and reboots into AP mode.
  *   - sendLocalIP():     announce the device's LAN IP to the cloud so
- *                        the user can reach the ESPUI portal remotely.
+ *                        the user can reach the config portal remotely.
  *   - sendUpload():       POST a finished run to the cloud — streams the
  *                        captured photo + max speed, or just the speed
  *                        when no photo was captured.
@@ -245,7 +245,7 @@ void serviceRegistration() {
  *
  * Attempts STA mode using credentials previously stored in NVS. If that
  * fails within ~7 seconds, falls back to AP mode so the user can open
- * the ESPUI portal at http://192.168.4.1 and enter credentials.
+ * the config portal at http://192.168.4.1 and enter credentials.
  */
 void connectWifiAP() {
   int connect_timeout;
@@ -762,7 +762,7 @@ void sendUpload(const UploadRequest& req) {
 
   Serial.printf("[UPLOAD] HTTP %d %s\n", httpsResponseCode,
                 (httpsResponseCode >= 200 && httpsResponseCode < 300) ? "PASS" : "FAIL");
-  diagnosticsRecordUpload(httpsResponseCode);  // surface the result on the ESPUI Status tab
+  diagnosticsRecordUpload(httpsResponseCode);  // surface the result on the config portal Status section
 
   if (httpsResponseCode > 0) {
     payload = https.getString();

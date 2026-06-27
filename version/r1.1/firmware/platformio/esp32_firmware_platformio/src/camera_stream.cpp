@@ -7,12 +7,12 @@
  * radar/photo path is paused (taskCore1 gates on stream_active) and WiFi is
  * kept up, and it auto-stops after STREAM_TIMEOUT_MS.
  *
- * Compiled as its own translation unit so esp_http_server.h never meets ESPUI's
- * ESPAsyncWebServer (their HTTP_* enums collide). This file therefore must NOT
- * include ESPUI.h, nor variables.h (which both pulls ESPUI in via the main
- * sketch and *defines* the shared globals -- including it here would multiply
- * those definitions). The two desired-state flags are reached by extern, and
- * the web-UI updates are delegated to main.cpp via the callbacks below.
+ * Compiled as its own translation unit so it never includes variables.h (which
+ * *defines* the shared globals -- including it here would multiply those
+ * definitions). The two desired-state flags are reached by extern. (Before the
+ * ESPUI removal this split was also forced by an esp_http_server vs
+ * ESPAsyncWebServer HTTP_* enum clash; that's gone now, but the isolation is
+ * still worth keeping.)
  */
 #include "camera_stream.h"
 
@@ -22,8 +22,8 @@
 #include "esp_camera.h"
 #include "esp_http_server.h"
 
-// Desired-state flags owned by variables.h (set by the ESPUI switcher, read
-// across the app). Reached by extern so this TU stays free of ESPUI.
+// Desired-state flags owned by variables.h (set by POST /api/stream, read
+// across the app). Reached by extern so this TU never includes variables.h.
 extern volatile bool stream_active;
 extern volatile unsigned long stream_deadline;
 
@@ -34,14 +34,6 @@ static const char* STREAM_PART = "Content-Type: image/jpeg\r\nContent-Length: %u
 
 static httpd_handle_t stream_httpd = NULL;
 static bool stream_running = false;  // actual server state (reconciled against stream_active)
-
-static StreamStartedCb s_on_started = NULL;
-static StreamStoppedCb s_on_stopped = NULL;
-
-void streamSetCallbacks(StreamStartedCb on_started, StreamStoppedCb on_stopped) {
-  s_on_started = on_started;
-  s_on_stopped = on_stopped;
-}
 
 // Minimal phone-friendly page that shows the live feed full width.
 static esp_err_t stream_index_handler(httpd_req_t* req) {
@@ -61,9 +53,9 @@ static esp_err_t stream_mjpeg_handler(httpd_req_t* req) {
   if (res != ESP_OK) return res;
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 
-  // Pace the stream. The freeze turned out to be ESPUI WebSocket broadcasts from
-  // taskCore1 blocking on AsyncTCP under streaming load (now suppressed while the
-  // stream is up), NOT stream bandwidth -- so a smooth ~10 fps is fine. Tunable.
+  // Pace the stream. The old freeze was taskCore1's per-loop ESPUI WebSocket
+  // broadcasts blocking on AsyncTCP under streaming load -- removed entirely with
+  // ESPUI (the config page now polls), NOT stream bandwidth. ~10 fps is fine.
   const TickType_t frame_interval = pdMS_TO_TICKS(100);  // ~10 fps
   char part_buf[64];
   while (true) {
@@ -97,7 +89,7 @@ static void streamStart() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = STREAM_PORT;
   config.ctrl_port = 32769;       // distinct from the default httpd control port
-  config.max_open_sockets = 2;    // keep socket pressure low alongside ESPUI/AsyncTCP
+  config.max_open_sockets = 2;    // keep socket pressure low alongside the config-portal httpd (:80)
   config.max_uri_handlers = 2;
 
   if (httpd_start(&stream_httpd, &config) == ESP_OK) {
@@ -110,7 +102,6 @@ static void streamStart() {
     String ip = (WiFi.getMode() == WIFI_STA) ? WiFi.localIP().toString() : WiFi.softAPIP().toString();
     String url = "http://" + ip + ":" + STREAM_PORT + "/";
     Serial.printf("[STREAM] started at %s (auto-off in %lus)\n", url.c_str(), STREAM_TIMEOUT_MS / 1000);
-    if (s_on_started) s_on_started(url.c_str());
   } else {
     Serial.println("[STREAM] httpd_start FAILED");
     if (s) s->set_framesize(s, FRAMESIZE_UXGA);  // restore on failure
@@ -129,7 +120,6 @@ static void streamStop() {
   if (s) s->set_framesize(s, FRAMESIZE_UXGA);  // back to full-res for speed photos
 
   Serial.println("[STREAM] stopped; camera restored to UXGA");
-  if (s_on_stopped) s_on_stopped();
 }
 
 // Reconcile desired (stream_active) vs actual server state, and enforce the
