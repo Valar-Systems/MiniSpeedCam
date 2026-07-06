@@ -142,6 +142,23 @@ live values and writes settings back via small JSON `POST` endpoints
 old ESPUI WebSocket broadcast from `taskCore1`, whose AsyncTCP send blocked the
 radar task and froze the device under WiFi/stream load.
 
+### `GET /api/events` — recent detections for LAN companions
+
+A read-only feed of the most recent passes, so a display on the same network can
+show recent speeds without the cloud (`events.h`, an in-RAM ring written at
+run-end). The reference consumer is the Blipscope **Speedscope** edition. Shape:
+
+```json
+{ "kph": false, "count": 2,
+  "events": [ { "speed": 31, "ageSec": 4, "mag": 1200, "dir": 1 },
+              { "speed": 24, "ageSec": 47, "mag": 780, "dir": 2 } ] }
+```
+
+Newest first; `speed` is a whole number in the device's configured unit (`kph`
+flag), `ageSec` is seconds since the pass (this board has no RTC — use it with
+your own clock for absolute times), and `dir` is `0` unknown / `1` approaching /
+`2` receding. CORS-open (`Access-Control-Allow-Origin: *`).
+
 ## Power management
 
 **Power-Saver Mode** (Device tab, persisted in NVS, default **on**) gates the
