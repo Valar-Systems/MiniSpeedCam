@@ -59,6 +59,7 @@
 Preferences preferences;  // NVS-backed key/value store for WiFi creds and user settings
 
 #include "variables.h"
+#include "events.h"          // recent-detection ring served by GET /api/events (LAN companions)
 #include "diagnostics.h"
 #include "camera.h"
 #include "camera_stream.h"
@@ -620,6 +621,9 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
                       (unsigned)req.mean_speed_x10, (unsigned)req.frame_count,
                       (unsigned long)req.duration_ms, (unsigned)req.peak_mag,
                       (unsigned)req.peak_snr, (int)req.has_photo);
+        // Also record into the local ring served by GET /api/events, so a LAN companion
+        // (e.g. the Blipscope "Speedscope" edition) can show recent speeds without the cloud.
+        eventsRecord(req.speed_actual, req.direction, req.peak_mag);
         if (xQueueSend(uploadQueue, &req, 0) != pdTRUE) {
           Serial.println("[RUN] upload queue FULL, dropping event");
           if (fb != nullptr) {

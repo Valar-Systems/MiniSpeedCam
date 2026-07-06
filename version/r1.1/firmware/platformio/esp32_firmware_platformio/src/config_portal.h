@@ -17,6 +17,7 @@
  * Endpoints (all on port 80):
  *   GET  /              -> the single-page config UI (CONFIG_HTML, from flash)
  *   GET  /api/state     -> JSON snapshot of live values + current settings
+ *   GET  /api/events    -> recent-detection ring (speed + age) for LAN companions
  *   POST /api/settings  -> device settings (units, speeds, signals); applied live
  *   POST /api/wifi      -> SSID / password / API base URL; persisted then reboot
  *   POST /api/clear     -> wipe WiFi credentials then reboot (into the setup AP)
@@ -292,6 +293,18 @@ static esp_err_t portalStateGet(httpd_req_t* req) {
   return httpd_resp_sendstr(req, out.c_str());
 }
 
+// GET /api/events -> recent-detection ring (events.h). Not used by the config page; it's a
+// read-only feed for LAN companion displays (e.g. Blipscope "Speedscope"). Allow cross-origin
+// so a browser-based companion can read it too.
+static esp_err_t portalEventsGet(httpd_req_t* req) {
+  String out;
+  eventsBuildJson(out);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  return httpd_resp_sendstr(req, out.c_str());
+}
+
 // POST /api/settings -> device settings; written to globals + NVS, applied live
 // (no reboot). Each field falls back to its current value if absent/malformed.
 static esp_err_t portalSettingsPost(httpd_req_t* req) {
@@ -432,7 +445,7 @@ void load_config_portal(void) {
   // /api/state polls; the old separate :81 stream server is gone (its sockets
   // freed), so this single server can afford more open sockets.
   config.max_open_sockets = 7;
-  config.max_uri_handlers = 10;
+  config.max_uri_handlers = 12;   // page + /api/* handlers + /api/events + the aiming stream
   config.lru_purge_enable = true;
   config.stack_size       = 8192;   // headroom for ArduinoJson + String building
 
@@ -443,6 +456,7 @@ void load_config_portal(void) {
 
   httpd_uri_t u_root   = { .uri = "/",             .method = HTTP_GET,  .handler = portalRootGet,      .user_ctx = NULL };
   httpd_uri_t u_state  = { .uri = "/api/state",    .method = HTTP_GET,  .handler = portalStateGet,     .user_ctx = NULL };
+  httpd_uri_t u_events = { .uri = "/api/events",   .method = HTTP_GET,  .handler = portalEventsGet,    .user_ctx = NULL };
   httpd_uri_t u_set    = { .uri = "/api/settings", .method = HTTP_POST, .handler = portalSettingsPost, .user_ctx = NULL };
   httpd_uri_t u_wifi   = { .uri = "/api/wifi",     .method = HTTP_POST, .handler = portalWifiPost,     .user_ctx = NULL };
   httpd_uri_t u_clear  = { .uri = "/api/clear",    .method = HTTP_POST, .handler = portalClearPost,    .user_ctx = NULL };
@@ -450,6 +464,7 @@ void load_config_portal(void) {
   httpd_uri_t u_otachk = { .uri = "/api/ota/check",.method = HTTP_POST, .handler = portalOtaCheckPost, .user_ctx = NULL };
   httpd_register_uri_handler(config_httpd, &u_root);
   httpd_register_uri_handler(config_httpd, &u_state);
+  httpd_register_uri_handler(config_httpd, &u_events);
   httpd_register_uri_handler(config_httpd, &u_set);
   httpd_register_uri_handler(config_httpd, &u_wifi);
   httpd_register_uri_handler(config_httpd, &u_clear);
