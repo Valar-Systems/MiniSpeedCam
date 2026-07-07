@@ -384,7 +384,11 @@ void connectWifi() {
   // try to connect to existing network
   Serial.println("\n\nTry to connect to existing network");
   Serial.println(ssid);
-  Serial.println(password);
+  // Never echo the WiFi password to the console -- serial output is trivially
+  // captured (USB, boot-log dumps) and this is the user's network secret. Log
+  // only whether one is set and its length, which is enough to debug "no
+  // password stored" vs "wrong password" without disclosing it.
+  Serial.printf("password: %s\n", password.length() ? "[set, redacted]" : "[empty]");
   WiFi.begin(ssid, password);
   uint8_t timeout = 100;
 

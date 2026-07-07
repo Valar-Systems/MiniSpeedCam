@@ -328,29 +328,40 @@ static bool portalTokenEquals(const char* a, const char* b, size_t n) {
   return diff == 0;
 }
 
+// Host allowlist -- the primary DNS-rebinding defense. Only meaningful when a
+// Host header is present (browsers always send one; the rebinding attack depends
+// on it). Accepts an IPv4 literal (optionally :port) or a case-insensitive
+// *.local name; a rebinding page sends its own domain and is rejected. Returns
+// true when allowed (including when no Host header is present -- non-browser
+// clients, which rebinding cannot leverage). Shared by the mutating-POST gate
+// below and by the read-only GET /api/state, which discloses claim_code/SSID.
+// NOTE: deliberately NOT applied to GET / (captive-portal detection probes arrive
+// with foreign Hosts and must still get the page) or to GET /api/events (a public
+// LAN companion feed that carries no secrets).
+static bool portalHostAllowed(httpd_req_t* req) {
+  char host[64] = {0};
+  if (httpd_req_get_hdr_value_str(req, "Host", host, sizeof(host)) != ESP_OK) return true;
+  char* colon = strchr(host, ':');
+  if (colon) *colon = '\0';                        // drop :port
+  for (char* p = host; *p; p++) {                  // lowercase in place
+    if (*p >= 'A' && *p <= 'Z') *p += 32;
+  }
+  size_t len = strlen(host);
+  bool is_local = (len >= 6) && (strcmp(host + len - 6, ".local") == 0);
+  bool is_ipv4 = (len > 0);
+  for (size_t i = 0; i < len; i++) {
+    if (!((host[i] >= '0' && host[i] <= '9') || host[i] == '.')) { is_ipv4 = false; break; }
+  }
+  return is_local || is_ipv4;
+}
+
 // Gate for state-changing handlers: Host allowlist + CSRF token. On failure it
 // sends 403 and returns false (the caller returns ESP_FAIL).
 static bool portalRequireAuth(httpd_req_t* req) {
-  // (1) Host allowlist -- only enforced when a Host header is present (browsers
-  // always send one; the rebinding attack depends on it). Accept an IPv4
-  // literal (optionally :port) or a case-insensitive *.local name.
-  char host[64] = {0};
-  if (httpd_req_get_hdr_value_str(req, "Host", host, sizeof(host)) == ESP_OK) {
-    char* colon = strchr(host, ':');
-    if (colon) *colon = '\0';                        // drop :port
-    for (char* p = host; *p; p++) {                  // lowercase in place
-      if (*p >= 'A' && *p <= 'Z') *p += 32;
-    }
-    size_t len = strlen(host);
-    bool is_local = (len >= 6) && (strcmp(host + len - 6, ".local") == 0);
-    bool is_ipv4 = (len > 0);
-    for (size_t i = 0; i < len; i++) {
-      if (!((host[i] >= '0' && host[i] <= '9') || host[i] == '.')) { is_ipv4 = false; break; }
-    }
-    if (!is_local && !is_ipv4) {
-      httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "bad host");
-      return false;
-    }
+  // (1) Host allowlist (DNS-rebinding defense).
+  if (!portalHostAllowed(req)) {
+    httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "bad host");
+    return false;
   }
 
   // (2) CSRF token: must equal the per-boot token embedded in the page.
@@ -377,6 +388,15 @@ static esp_err_t portalRootGet(httpd_req_t* req) {
 
 // GET /api/state -> JSON snapshot polled by the page.
 static esp_err_t portalStateGet(httpd_req_t* req) {
+  // /api/state discloses claim_code (while unclaimed) and the configured SSID, so
+  // apply the same Host allowlist the mutating handlers use -- otherwise a
+  // DNS-rebinding page the owner merely visits could read them cross-origin. The
+  // legitimate page poll is same-origin (Host = the device IP or .local), so it
+  // passes; a non-browser client (no Host header) passes too.
+  if (!portalHostAllowed(req)) {
+    httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "bad host");
+    return ESP_FAIL;
+  }
   String out;
   portalBuildState(out);
   httpd_resp_set_type(req, "application/json");
