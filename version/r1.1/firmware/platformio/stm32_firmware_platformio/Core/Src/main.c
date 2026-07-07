@@ -33,11 +33,6 @@
 #define STM_FW_VERSION "1.0.4"
 #endif
 
-// Do we skip data analysis after updating display?
-//#define SKIP_ADC_DATA_AFTER_DISPLAY
-// After how many FFTs do we update display
-#define FFT_CNT_DISP 10 // 10 original
-
 #define DOPPLER_Pin GPIO_PIN_0
 #define DOPPLER_GPIO_Port GPIOB
 
@@ -117,8 +112,11 @@ UART_HandleTypeDef huart2;
 
 volatile uint16_t analog_result_buffer1[1024];
 volatile uint16_t analog_result_buffer2[1024];
-volatile uint16_t *analog_cur_adc_dest_buf_pt;
-volatile uint16_t *analog_cplt_adc_dest_buf_pt;
+/* Pointer objects themselves are volatile (not just the pointed-to data): they
+ * are reassigned in the DMA ISR (analog_trigger_conversion) and read in the main
+ * loop, so the compiler must re-load them each access, not cache across the loop. */
+volatile uint16_t * volatile analog_cur_adc_dest_buf_pt;
+volatile uint16_t * volatile analog_cplt_adc_dest_buf_pt;
 volatile BOOL analog_fdma_transfer_started;
 volatile BOOL analog_adc_train_done_flag;
 arm_rfft_fast_instance_f32 analog_fft;
@@ -135,6 +133,15 @@ volatile uint32_t analog_dbg_floor_mean = 0;
 volatile uint16_t analog_dbg_bad_count = 0;
 volatile uint8_t analog_dbg_dropped = 0;
 volatile uint8_t analog_dbg_blanked = 0; /* frame discarded due to WiFi-busy line */
+
+/* ADC/DMA overrun detector. HAL_ADC_ConvCpltCallback sets this if the main loop
+ * had not yet consumed the previous frame (analog_adc_train_done_flag still TRUE)
+ * when the next DMA train completed and the buffers were swapped: the frame the
+ * main loop is about to read is being overwritten by the ADC DMA -- a torn splice
+ * of two frames -- so the FFT path discards it (holds the median) instead of
+ * emitting a false peak from it. analog_overrun_count trends the rate. */
+volatile uint8_t  analog_overrun_flag = 0;
+volatile uint32_t analog_overrun_count = 0;
 
 /* USART1 (ESP32 link) interrupt-driven RX ring buffer. The ESP polls for speed
  * with single command bytes; the F3 USART has no RX FIFO, so a stray noise byte
@@ -219,11 +226,15 @@ int main(void) {
 
 	BOOL remove_low_freqs = FALSE;
 	uint16_t last_fft_return = 0;
-	uint16_t fft_nb_counter = 0;
-	/* TEMPORARY: default-on so the dump is readable without typing 'd' (the VS
-	 * Code PlatformIO monitor does not reliably forward keystrokes). Set back
-	 * to FALSE once diagnosis is done so it doesn't talk over the ESP32 link. */
+	/* Per-frame diagnostic dump (USART2). OFF in production so it never steals
+	 * ~6ms/frame from the sampling loop (which raises frame-overrun risk) or talks
+	 * over the ESP32 link; a bench build enables it with -DDIAG_DEFAULT_ON, and the
+	 * 'd' command still toggles it when debug commands are compiled in. */
+#ifdef DIAG_DEFAULT_ON
 	BOOL diag_enabled = TRUE;
+#else
+	BOOL diag_enabled = FALSE;
+#endif
 	uint16_t diag_counter = 0;
 
 #ifdef CUR_TRANSIENT_TEST
@@ -287,26 +298,6 @@ int main(void) {
 			 * normal operation can never trip it. */
 			IWDG->KR = 0xAAAA;
 
-			/* Every few ms we display the speed and depending on define not do anything with the data has the current draw is enough to have an impact on the +5V PSU */
-			if (fft_nb_counter++ == FFT_CNT_DISP) {
-				/* Reset counter */
-				fft_nb_counter = 0;
-			}
-
-			/* Should we display the result? */
-			if (fft_nb_counter == FFT_CNT_DISP) {
-				/* Valid return? */
-				if (last_fft_return == 0) {
-					/* Pull ESP32 line LOW */
-					HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
-
-				} else {
-					/* Pull ESP32 line HIGH */
-					HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
-
-				}
-			}
-
 			/* Debug ADC output buffer ? */
 			if (output_debug_enabled != FALSE) {
 				analog_output_conversion_buffer_to_uart();
@@ -315,6 +306,15 @@ int main(void) {
 			/* Compute FFT */
 			last_fft_return = analog_compute_fft_on_cplted_sequence(
 					remove_low_freqs);
+
+			/* Drive the ESP32 "target present" wake line (PA5) every frame from the
+			 * just-computed result. A vestigial FFT_CNT_DISP counter (left over from
+			 * the old 7-segment display it once throttled) used to update PA5 only
+			 * ~1 frame in 11 and from the PREVIOUS frame's value -- delaying the wake
+			 * by up to ~315ms of stale data, several metres of car travel before the
+			 * ESP woke to capture. Now it tracks the current frame with ~29ms latency. */
+			HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5,
+					last_fft_return ? GPIO_PIN_SET : GPIO_PIN_RESET);
 
 			/* Debug FFT output buffer ? */
 			if (output_debug_enabled != FALSE) {
@@ -345,17 +345,16 @@ int main(void) {
 				}
 			}
 
-			/* Commands from UART */
+			/* Commands from UART. Only the query set ('m'/'k'/'v') is honored in
+			 * production. On this noise-prone link a single corrupted byte that
+			 * decoded as a state-changing command used to silently mutate detection
+			 * until the next reset -- e.g. a stray 'h' raised the min-speed floor so
+			 * slow (school-zone) cars stopped being detected, with no field-visible
+			 * cause. A corrupted 'm'/'k'/'v' is harmless: the reply is checksummed,
+			 * so the ESP just rejects it. The debug/config commands are compiled in
+			 * only for bench builds (-DENABLE_DEBUG_COMMANDS). */
 			char uart_input = debug_get_char_from_uart();
-			if (uart_input == 'a') {
-				output_debug_enabled = TRUE;
-			} else if (uart_input == 's') {
-				output_debug_enabled = FALSE;
-			} else if (uart_input == 'h') {
-				remove_low_freqs = TRUE;
-			} else if (uart_input == 'l') {
-				remove_low_freqs = FALSE;
-			} else if (uart_input == 'k' || uart_input == 'm') {
+			if (uart_input == 'k' || uart_input == 'm') {
 				/* Clamp the raw FFT peak magnitude into a uint16 for the reply:
 				 * >>4 keeps the (large) magnitudes in range while preserving
 				 * plenty of resolution for the ESP32's proximity gate. A frame
@@ -364,11 +363,11 @@ int main(void) {
 				if (m > 65535U) {
 					m = 65535U;
 				}
-				/* Peak/floor ratio x10 (the unit-independent detection quality;
-				 * the on-chip detector needs >= 40). Unlike <mag> it doesn't
-				 * scale with target size, so the ESP32 can log it as a per-event
-				 * confidence and the floor can be trended for EMI. 0 when the
-				 * frame failed the gate or the noise floor is unknown. */
+				/* Peak/floor ratio x10 (the unit-independent detection quality; a
+				 * valid detection needs >= 10*ANALOG_MIN_SNR = 150). Unlike <mag> it
+				 * doesn't scale with target size, so the ESP32 can log it as a
+				 * per-event confidence and the floor can be trended for EMI. 0 when
+				 * the frame failed the gate or the noise floor is unknown. */
 				uint32_t snr = ((last_fft_return != 0) && (analog_dbg_floor_mean != 0))
 						? (analog_dbg_peak_mag * 10UL / analog_dbg_floor_mean)
 						: 0;
@@ -378,15 +377,26 @@ int main(void) {
 				float scale = (uart_input == 'k') ? FFT_HZ_TO_KPH_X10 : FFT_HZ_TO_MPH_X10;
 				uart_reply_speed((uint16_t) (last_fft_return * scale),
 						(uint16_t) m, (uint16_t) snr);
-			} else if (uart_input == 'd') {
-				/* Toggle the readable diagnostic dump (see above). */
-				diag_enabled = (diag_enabled == FALSE) ? TRUE : FALSE;
 			} else if (uart_input == 'v') {
 				/* Report firmware version to the ESP32 (OTA version check). The
 				 * "V<ver>" prefix keeps it distinct from a speed reply, which is
 				 * "<n>,<n>,<n>*<CK>". */
 				printf("V%s\r\n", STM_FW_VERSION);
 			}
+#ifdef ENABLE_DEBUG_COMMANDS
+			else if (uart_input == 'a') {
+				output_debug_enabled = TRUE;
+			} else if (uart_input == 's') {
+				output_debug_enabled = FALSE;
+			} else if (uart_input == 'h') {
+				remove_low_freqs = TRUE;
+			} else if (uart_input == 'l') {
+				remove_low_freqs = FALSE;
+			} else if (uart_input == 'd') {
+				/* Toggle the readable diagnostic dump. */
+				diag_enabled = (diag_enabled == FALSE) ? TRUE : FALSE;
+			}
+#endif
 		}
 
 		/* USER CODE END WHILE */
@@ -728,6 +738,14 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
  *   \param	hadc	Pointer to the adc handle that brought up this interrupt
  */
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc) {
+	/* Overrun: the previous frame's done-flag is still set, so the main loop has
+	 * not consumed it yet. Swapping buffers now leaves main reading a buffer the
+	 * ADC DMA is re-filling from index 0 (a torn splice of two frames). Flag it so
+	 * the FFT path discards the frame instead of emitting a false peak from it. */
+	if (analog_adc_train_done_flag != FALSE) {
+		analog_overrun_flag = 1;
+		analog_overrun_count++;
+	}
 	analog_trigger_conversion();
 	analog_adc_train_done_flag = TRUE;
 }
@@ -871,19 +889,42 @@ uint16_t analog_compute_fft_on_cplted_sequence(BOOL remove_low_freqs) {
 	float32_t max_value, floor_mean, mean, stddev;
 	uint32_t max_index;
 
-	/* --- (0) WiFi-TX blanking handshake ---------------------------------- *
+	/* --- (0) WiFi-TX blanking handshake + one-frame hangover -------------- *
 	 * The ESP32 drives PA4 HIGH around its WiFi bursts (uploads / reconnects),
-	 * which slump the shared rail and corrupt the radar reads. When the line is
-	 * asserted, drop this frame outright -- a direct, a-priori "contaminated"
-	 * flag, far more reliable than inferring it from the noise statistics, and
-	 * it skips the FFT entirely so we also save CPU during the burst. The busy
-	 * window lasts many frames, so reading the level here is sufficient. */
+	 * which slump the shared rail and corrupt the radar reads. Drop those frames
+	 * outright -- a direct, a-priori "contaminated" flag, far more reliable than
+	 * inferring it from the noise statistics, and it skips the FFT so we also save
+	 * CPU during the burst.
+	 * The level is read here at frame-processing time, i.e. just AFTER the frame
+	 * finished acquiring -- so a burst that ended partway through the frame (PA4
+	 * already back LOW by now) would leak that partly-corrupted trailing frame.
+	 * Guard it with a one-frame hangover: after any blanked frame, discard one
+	 * more even if PA4 has dropped. (A short burst that both starts and ends
+	 * within a single acquisition window still evades this level check; catching
+	 * that needs a PA4 rising-edge latch (EXTI) or an ESP-side tail-hold on the
+	 * line -- deferred, and backstopped by the SNR + median gates.) */
+	static uint8_t blank_tail = 0;
 	if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_4) == GPIO_PIN_SET) {
+		blank_tail = 2;   /* discard this frame + one trailing (edge-corrupted) frame */
+	}
+	if (blank_tail != 0) {
+		blank_tail--;
 		analog_dbg_blanked = 1;
 		uint16_t held = analog_buffer_median();
 		return (uint16_t) ((float32_t) held * ANALOG_SAMPLE_RATE_HZ / N);
 	}
 	analog_dbg_blanked = 0;
+
+	/* Overrun guard: if the ADC completed another DMA train before the main loop
+	 * consumed the last frame (analog_overrun_flag, set in the ConvCplt ISR), the
+	 * buffer we are about to read was mid-swap and may splice two frames. Discard
+	 * it (hold the median) rather than run a torn frame through the FFT. */
+	if (analog_overrun_flag != 0) {
+		analog_overrun_flag = 0;
+		analog_dbg_dropped = 1;
+		uint16_t held = analog_buffer_median();
+		return (uint16_t) ((float32_t) held * ANALOG_SAMPLE_RATE_HZ / N);
+	}
 
 	/* Convert to float */
 	for (uint16_t i = 0; i < N; i++) {
@@ -935,10 +976,16 @@ uint16_t analog_compute_fft_on_cplted_sequence(BOOL remove_low_freqs) {
 		const float32_t k = 2.0f * cosf(theta);
 		float32_t a_im1 = cosf(theta); /* a[-1] = cos(theta) */
 		float32_t a_i = 1.0f; /* a[0]  = cos(0) = 1 */
-		for (uint16_t i = 0; i < N; i++) {
+		/* Hann is symmetric: window[i] == window[N-1-i]. Run the cosine recurrence
+		 * over only the first half and apply each value to BOTH ends. This halves
+		 * the recurrence depth (so the float32 accumulation drift, up to ~2% at the
+		 * far end of the old full-length loop, is roughly halved) and makes the
+		 * window exactly symmetric, which keeps the FFT's real spectrum clean. N is
+		 * even, so i and N-1-i never collide and every sample is written once. */
+		for (uint16_t i = 0; i <= (N - 1) / 2; i++) {
 			float32_t hann = 0.5f * (1.0f - a_i);
-			analog_temp_float_array[i] = (analog_temp_float_array[i] - mean)
-					* hann;
+			analog_temp_float_array[i]         = (analog_temp_float_array[i] - mean) * hann;
+			analog_temp_float_array[N - 1 - i] = (analog_temp_float_array[N - 1 - i] - mean) * hann;
 			float32_t a_next = k * a_i - a_im1;
 			a_im1 = a_i;
 			a_i = a_next;
@@ -973,7 +1020,20 @@ uint16_t analog_compute_fft_on_cplted_sequence(BOOL remove_low_freqs) {
 		for (uint16_t i = min_bin; i < (N / 2); i++) {
 			fsum += analog_temp_float_array[i];
 		}
-		floor_mean = fsum / (float32_t) band;
+		/* Exclude the peak's own Hann main lobe (max_index +/- 2 bins, clamped to
+		 * the band) from the noise-floor estimate. Leaving it in inflates the floor
+		 * for a strong tone, which silently tightens the SNR gate (~7%) and caps the
+		 * reported snr; removing it makes ANALOG_MIN_SNR exact and lets snr scale
+		 * linearly for strong targets. */
+		uint32_t lobe_lo = (max_index > (uint32_t) min_bin + 2) ? (max_index - 2) : min_bin;
+		uint32_t lobe_hi = (max_index + 2 < (uint32_t) (N / 2)) ? (max_index + 2) : (uint32_t) (N / 2 - 1);
+		uint16_t excluded = 0;
+		for (uint32_t i = lobe_lo; i <= lobe_hi; i++) {
+			fsum -= analog_temp_float_array[i];
+			excluded++;
+		}
+		uint16_t denom = (band > excluded) ? (uint16_t) (band - excluded) : 1;
+		floor_mean = fsum / (float32_t) denom;
 	}
 	BOOL valid_detection = (floor_mean > 0.0f)
 			&& (max_value >= ANALOG_MIN_SNR * floor_mean);
