@@ -575,7 +575,9 @@ void load_config_portal(void) {
   // /api/state polls; the old separate :81 stream server is gone (its sockets
   // freed), so this single server can afford more open sockets.
   config.max_open_sockets = 7;
-  config.max_uri_handlers = 12;   // page + /api/* handlers + /api/events + the aiming stream
+  config.max_uri_handlers = 12;   // 9 registered (/, /api/state, /api/events, /api/settings,
+                                  // /api/wifi, /api/clear, /api/stream, /api/ota/check, GET /stream)
+                                  // plus a little headroom
   config.lru_purge_enable = true;
   config.stack_size       = 8192;   // headroom for ArduinoJson + String building
   // Cap a single blocking recv so a stalled client can't pin the worker for the

@@ -164,18 +164,22 @@ void setup() {
   // rail, so power-cycle and retry a few times rather than booting blind with
   // a dead sensor (which would silently upload empty photos).
   cameraPowerOn();
-  int camera_attempts = 0;
-  while (cameraSetup() == 0 && camera_attempts < 3) {
-    camera_attempts++;
-    Serial.printf("[CAM] init failed, retry %d/3\n", camera_attempts);
+  bool camera_ok = false;
+  for (int attempt = 1; attempt <= 3; attempt++) {
+    if (cameraSetup() != 0) { camera_ok = true; break; }
+    // The old loop tested cameraSetup() in the while-condition, so on all-fail it
+    // ran a 4th init while reporting "3 attempts", and -- worse -- a camera that
+    // finally came up on the last try was logged as FAILED. Count each of exactly
+    // three attempts here and report success/failure from the actual result.
+    Serial.printf("[CAM] init attempt %d/3 failed\n", attempt);
     esp_camera_deinit();  // release any partial init before re-attempting
     delay(250);
     cameraPowerOn();
   }
-  if (camera_attempts >= 3) {
-    Serial.println("[CAM] FAILED after 3 attempts; photo capture disabled");
-  } else {
+  if (camera_ok) {
     Serial.println("[CAM] ready");
+  } else {
+    Serial.println("[CAM] FAILED after 3 attempts; photo capture disabled");
   }
 
   SPIFFS.begin(true);
@@ -287,7 +291,14 @@ void setup() {
  * pinned to separate cores via xTaskCreatePinnedToCore() in setup().
  */
 void loop() {
-  // Loop not used. Use tasks intead for dual-core performance
+  // All recurring work runs in taskCore0/taskCore1 (pinned in setup()); this
+  // Arduino loopTask has nothing to do. Park it rather than spin: an empty loop()
+  // leaves loopTask permanently READY at priority 1 on core 1 -- the SAME core and
+  // priority as taskCore1 -- so the two round-robin and the radar task gets only
+  // ~half the core for no benefit. Blocking yields the core to taskCore1 and lets
+  // the idle task run (lower power). Kept alive (not vTaskDelete) so any Arduino
+  // serialEvent plumbing still ticks.
+  vTaskDelay(pdMS_TO_TICKS(1000));
 }
 
 unsigned long previousMillis = 0;  // Timestamp of last idle-sleep tick
@@ -315,7 +326,8 @@ const unsigned long MAX_RUN_MS = 60000;
  * Core 1 task: radar polling, sleep policy, and captive-DNS servicing.
  *
  * Each iteration:
- *   1. Services one captive-DNS request so the config page resolves.
+ *   1. Pumps the captive-DNS server (inert today: dnsServer.start() is never
+ *      called -- see variables.h -- so this is a no-op until it is wired up).
  *   2. Releases the post-startup "ignore" window after 5s.
  *   3. Polls the STM32 for the latest speed (in MPH or KPH per user setting).
  *   4. Manages two sleep/idle paths (post-boot grace, and 5s of no radar).
@@ -328,7 +340,7 @@ const unsigned long MAX_RUN_MS = 60000;
 void taskCore1(void* parameter) {  // Code for task running on Core 1
   while (1) {                      // Loop indefinitely
 
-    dnsServer.processNextRequest();  // Process captive-DNS request for the config portal
+    dnsServer.processNextRequest();  // captive-DNS pump; no-op until dnsServer.start() is wired (see variables.h)
 
     streamService();  // enforce the aiming-stream 5-minute auto-off timeout
 
