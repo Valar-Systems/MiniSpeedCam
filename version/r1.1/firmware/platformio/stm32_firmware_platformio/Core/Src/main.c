@@ -380,8 +380,19 @@ int main(void) {
 			} else if (uart_input == 'v') {
 				/* Report firmware version to the ESP32 (OTA version check). The
 				 * "V<ver>" prefix keeps it distinct from a speed reply, which is
-				 * "<n>,<n>,<n>*<CK>". */
-				printf("V%s\r\n", STM_FW_VERSION);
+				 * "<n>,<n>,<n>*<CK>". Carries the SAME XOR checksum (over the
+				 * "V<ver>" payload) the speed replies use, so the ESP can reject a
+				 * corrupted version answer instead of driving a wrong OTA decision
+				 * on a garbled string -- a real risk on this noisy board. */
+				char vbuf[24];
+				int vn = snprintf(vbuf, sizeof(vbuf), "V%s", STM_FW_VERSION);
+				if (vn < 0) vn = 0;
+				if (vn > (int) sizeof(vbuf) - 1) vn = (int) sizeof(vbuf) - 1;  /* truncation guard */
+				uint8_t vck = 0;
+				for (int i = 0; i < vn; i++) {
+					vck ^= (uint8_t) vbuf[i];
+				}
+				printf("%s*%02X\r\n", vbuf, vck);
 			}
 #ifdef ENABLE_DEBUG_COMMANDS
 			else if (uart_input == 'a') {
@@ -1071,11 +1082,19 @@ uint16_t analog_compute_fft_on_cplted_sequence(BOOL remove_low_freqs) {
  */
 void Error_Handler(void) {
 	/* USER CODE BEGIN Error_Handler_Debug */
-	/* Previously this was empty, so a failed HAL init silently fell through and
-	 * ran with half-initialised peripherals. Instead, stop with interrupts off:
-	 * if the watchdog is already running the MCU resets and retries; if the
-	 * failure happened during early init (before the IWDG starts) it halts
-	 * visibly (no boot banner / no replies) rather than emitting garbage. */
+	/* A failed HAL init must not silently run with half-initialised peripherals.
+	 * Stop and let the independent watchdog reset the MCU so a transient boot
+	 * fault (e.g. a brownout during init) self-recovers. If we reached here BEFORE
+	 * main() started the IWDG, start it now -- otherwise an early-init failure
+	 * would hang forever with no watchdog to reset it (a silent brick). Starting
+	 * an already-running IWDG is harmless; we then spin without refreshing it, so
+	 * the ~2s timeout resets us wherever the failure occurred. A persistent fault
+	 * becomes an observable ~2s reset loop (the ESP32 sees the STM link stay dead
+	 * and keeps WiFi up for an OTA reflash) rather than a silent halt. */
+	IWDG->KR  = 0x5555;   /* unlock PR/RLR */
+	IWDG->PR  = 0x04;     /* prescaler /64 */
+	IWDG->RLR = 1250;     /* reload -> ~2.0s */
+	IWDG->KR  = 0xCCCC;   /* start (no-op if already running) */
 	__disable_irq();
 	while (1) {
 	}

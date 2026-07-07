@@ -185,7 +185,22 @@ String get_stm32_version() {
 
   // Expect "V<version>"; anything else (noise, a stray speed reply) -> unknown.
   if (got_line && line[0] == 'V' && idx > 1) {
-    return String(line + 1);
+    // Newer STM firmware appends the same XOR checksum the speed replies use:
+    // "V<ver>*<CK>", the checksum taken over the "V<ver>" payload. Verify it when
+    // present so a corrupted version can't drive a wrong OTA decision; older
+    // firmware sends a bare "V<ver>" (no '*'), which we still accept.
+    char* vstar = strchr(line, '*');
+    if (vstar != nullptr) {
+      *vstar = '\0';  // terminate the "V<ver>" payload; vstar+1 is the checksum hex
+      uint8_t rx_ck = (uint8_t)strtol(vstar + 1, nullptr, 16);
+      uint8_t calc_ck = 0;
+      for (const char* p = line; *p != '\0'; p++) calc_ck ^= (uint8_t)*p;
+      if (calc_ck != rx_ck) {
+        Serial.printf("[RADAR] 'v' checksum fail: \"%s*%s\"\n", line, vstar + 1);
+        return String("unknown");
+      }
+    }
+    return String(line + 1);  // "<ver>"
   }
   return String("unknown");
 }
