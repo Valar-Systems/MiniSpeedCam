@@ -46,6 +46,13 @@
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
 
+// After a FAILED STM32 flash, retry this soon instead of waiting the full
+// periodic interval: the radar MCU may be dead until a flash succeeds, and the
+// ROM bootloader is always re-enterable so an early retry is safe.
+#ifndef OTA_STM_RETRY_MS
+#define OTA_STM_RETRY_MS (5UL * 60UL * 1000UL)   // 5 minutes
+#endif
+
 // Format a status line into ota_status (mirrored to the web UI by taskCore1)
 // and echo it to the serial console.
 static void otaSetStatus(const char* fmt, ...) {
@@ -251,9 +258,12 @@ void otaInstallEsp() {
 // stops polling the radar over the shared UART1. (No rollback for the STM32, so
 // the pre-flash MD5 verify is the protection; a known-good STM image can always
 // be re-flashed by a later release.)
-void otaInstallStm() {
-  if (!ota_stm_available || ota_stm_url.isEmpty()) { otaSetStatus("STM: no update"); return; }
-  if (WiFi.getMode() != WIFI_STA || WiFi.status() != WL_CONNECTED) { otaSetStatus("STM: WiFi not connected"); return; }
+// Returns true on a confirmed flash, false on any failure (caller schedules a
+// prompt retry -- see otaAutoService -- since a failed flash may leave the radar
+// MCU dead until the next attempt succeeds).
+bool otaInstallStm() {
+  if (!ota_stm_available || ota_stm_url.isEmpty()) { otaSetStatus("STM: no update"); return false; }
+  if (WiFi.getMode() != WIFI_STA || WiFi.status() != WL_CONNECTED) { otaSetStatus("STM: WiFi not connected"); return false; }
 
   otaSetStatus("STM %s: downloading...", ota_stm_version.c_str());
   RadarBlankGuard _blank;
@@ -263,16 +273,16 @@ void otaInstallStm() {
   https.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
   https.setConnectTimeout(8000);
   https.setTimeout(8000);
-  if (!https.begin(client, ota_stm_url)) { otaSetStatus("STM: bad URL"); return; }
+  if (!https.begin(client, ota_stm_url)) { otaSetStatus("STM: bad URL"); return false; }
   https.addHeader("User-Agent", "MiniSpeedCam-OTA");
   int code = https.GET();
-  if (code != 200) { otaSetStatus("STM: download HTTP %d", code); https.end(); return; }
+  if (code != 200) { otaSetStatus("STM: download HTTP %d", code); https.end(); return false; }
   int len = https.getSize();
-  if (len <= 0 || len > 256 * 1024) { otaSetStatus("STM: bad size %d", len); https.end(); return; }
+  if (len <= 0 || len > 256 * 1024) { otaSetStatus("STM: bad size %d", len); https.end(); return false; }
 
   uint8_t* buf = (uint8_t*)ps_malloc(len);
   if (!buf) buf = (uint8_t*)malloc(len);
-  if (!buf) { otaSetStatus("STM: out of memory (%d B)", len); https.end(); return; }
+  if (!buf) { otaSetStatus("STM: out of memory (%d B)", len); https.end(); return false; }
 
   // Read the whole image into the buffer (it's tiny -- the STM32 has 64 KB flash).
   WiFiClient* stream = https.getStreamPtr();
@@ -290,7 +300,7 @@ void otaInstallStm() {
     }
   }
   https.end();
-  if (got != len) { free(buf); otaSetStatus("STM: short download %d/%d", got, len); return; }
+  if (got != len) { free(buf); otaSetStatus("STM: short download %d/%d", got, len); return false; }
 
   // Verify MD5 if the manifest provided one (added in chunks; image can exceed the 64 KB cap above).
   if (ota_stm_md5.length() == 32) {
@@ -305,20 +315,34 @@ void otaInstallStm() {
     if (!md5.toString().equalsIgnoreCase(ota_stm_md5)) {
       free(buf);
       otaSetStatus("STM: MD5 mismatch");
-      return;
+      return false;
     }
   }
 
   otaSetStatus("STM %s: flashing...", ota_stm_version.c_str());
   stm_flash_busy = true;   // Core 0 takes UART1; taskCore1 pauses radar polling
   delay(200);              // let any in-flight get_speed() on taskCore1 finish first
+
+  // The STM32 ROM bootloader is always re-enterable (BOOT0 + reset), so a NACK
+  // or a UART glitch mid-flash (both plausible on this noisy shared rail) is
+  // recoverable by simply retrying the whole enter/erase/write sequence. Try a
+  // few times before giving up, so a transient failure can't leave the radar MCU
+  // sitting on erased flash until the next (distant) periodic check.
   String err;
-  bool ok = stm32FlashImage(buf, (size_t)len, err);
+  bool ok = false;
+  for (int attempt = 1; attempt <= 3 && !ok; attempt++) {
+    ok = stm32FlashImage(buf, (size_t)len, err);
+    if (!ok) {
+      Serial.printf("[OTA] STM flash attempt %d/3 failed: %s\n", attempt, err.c_str());
+      otaSetStatus("STM flash retry %d/3 (%s)", attempt, err.c_str());
+      delay(200);
+    }
+  }
   free(buf);
   if (!ok) {
     stm_flash_busy = false;
-    otaSetStatus("STM flash failed: %s", err.c_str());
-    return;
+    otaSetStatus("STM flash failed after 3 tries: %s", err.c_str());
+    return false;
   }
 
   // Confirm by re-reading the version (still under stm_flash_busy, so UART1 is ours).
@@ -329,6 +353,7 @@ void otaInstallStm() {
 
   ota_stm_available = false;  // consumed
   otaSetStatus("STM updated -> %s", stm_fw_version.c_str());
+  return true;
 }
 
 // Set the boot partition back to the previous (known-good) slot and reboot. The
@@ -433,7 +458,11 @@ void otaAutoService() {
 
   if (!otaCheckGithub()) return;
 
-  if (ota_stm_available) otaInstallStm();
+  if (ota_stm_available) {
+    // A failed STM flash can leave the radar dead, so don't wait the full 6h
+    // periodic interval to try again -- retry within a few minutes.
+    if (!otaInstallStm()) nextCheck = millis() + OTA_STM_RETRY_MS;
+  }
 
   if (ota_esp_available) {
     if (ota_esp_version == preferences.getString("ota_esp_bad", "")) {

@@ -58,6 +58,13 @@
 
 Preferences preferences;  // NVS-backed key/value store for WiFi creds and user settings
 
+// Post-boot window during which WiFi/portal stays up so the user can reach the
+// config page after a reboot; Power-Saver then drops WiFi when idle. (Was
+// mistakenly shipped as a 10s debug value -- the trailing "//120000" gave it
+// away -- which left almost no window to reach the portal and killed the first
+// OTA check before it could run.)
+static const unsigned long POST_BOOT_WIFI_GRACE_MS = 120000;
+
 #include "variables.h"
 #include "events.h"          // recent-detection ring served by GET /api/events (LAN companions)
 #include "diagnostics.h"
@@ -185,6 +192,7 @@ void setup() {
   Serial.printf("[API] base URL: %s\n", api_base_url.c_str());
   loadOrCreateIdentity();  // device_token + claim_code: minted once on first boot, reused forever
   min_speed = preferences.getInt("min_speed", 3);             // The minimum speed (MPH) that the tracker should track any vehicle and upload data
+  if (min_speed < 1) min_speed = 1;  // 0 would make the run loop `while (speed >= min_speed)` never end (get_speed never returns <0)
   photo_speed = preferences.getInt("photo_speed", 10);        // Cars speed (MPH) when photo should be taken
   min_signal = preferences.getInt("min_signal", 0);           // Min radar echo strength to arm a run (0 = off; proximity gate, see variables.h)
   photo_signal = preferences.getInt("photo_signal", 0);       // Shared fire threshold (direction-aware proximity timing; 0 = off, capture at photo_speed)
@@ -225,8 +233,9 @@ void setup() {
   // Send local IP address to API if connected to internet
   sendLocalIP();
 
-  // Put device to sleep after 120 seconds after setup
-  sleep_time = millis() + 10000;  //120000
+  // Keep WiFi/portal up for the post-boot grace window so the user can reach the
+  // config page after a reboot; Power-Saver then drops WiFi once idle.
+  sleep_time = millis() + POST_BOOT_WIFI_GRACE_MS;
   wake_flag = true;
 
   // ignore device measurements for 5 seconds after startup
@@ -294,6 +303,13 @@ const int SPEED_CONFIRM_COUNT = 2;
 // photo_signal during its run, still fire once magnitude has fallen to this
 // percent of the run's peak -- a best-effort "near closest approach" shot.
 const int PHOTO_PEAK_DROP_PCT = 70;
+
+// Failsafe cap on a single tracking run. A real vehicle clears the beam in a few
+// seconds; a run that lasts this long is sustained noise (a vibrating reflector
+// reads as a steady ~20mph) or misconfiguration. Finalize what was measured and
+// re-arm rather than let the inner loop wedge taskCore1 -- a wedged loop stops
+// servicing the WiFi-reset button, the aiming stream, captive-DNS, and OTA.
+const unsigned long MAX_RUN_MS = 60000;
 
 /**
  * Core 1 task: radar polling, sleep policy, and captive-DNS servicing.
@@ -368,8 +384,15 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
     // Never power down WiFi while unconfigured: the soft-AP must stay up so
     // the user can open the portal and enter credentials (ssid == "NOT_SET").
     if (power_saver && !stream_active && ssid != "NOT_SET" && wake_flag == true) {
-      if (millis() >= sleep_time) {              // Only if 120 seconds passed
-        if (digitalRead(ESP_WAKEUP_PIN) == 0) {  // Only if STM not measuring data
+      if (millis() >= sleep_time) {              // Only if the grace window elapsed
+        // Don't drop WiFi out from under an in-flight upload/OTA (coreNetBusy),
+        // and don't drop it while the radar link looks dead (stmLinkDead) -- keep
+        // the portal/OTA reachable so the STM can be reflashed instead of the
+        // device stranding offline. In either case push the deadline out so the
+        // grace window simply restarts once Core 0 goes quiet / the radar is back.
+        if (coreNetBusy() || stmLinkDead()) {
+          sleep_time = millis() + 5000;
+        } else if (digitalRead(ESP_WAKEUP_PIN) == 0) {  // Only if STM not measuring data
           wake_flag = false;
           Serial.println("[PWR] idle: WiFi off (post-boot grace elapsed)");
 
@@ -389,7 +412,13 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
     unsigned long currentMillis = millis();
 
     if (power_saver && !stream_active && ssid != "NOT_SET" && wake_flag == false) {
-      if (speed == 0) {  // Check if speed is 0
+      if (coreNetBusy() || stmLinkDead()) {
+        // In-flight upload/OTA, or a dead radar link: hold WiFi up and restart
+        // the 5s idle window so we don't tear the radio down mid-transfer (the
+        // transfer itself blanks the radar, forcing speed==0 -- the very thing
+        // that would otherwise arm this timer).
+        previousMillis = currentMillis;
+      } else if (speed == 0) {  // Check if speed is 0
         if (currentMillis - previousMillis >= interval) {
           previousMillis = currentMillis;      // Save the last time
           Serial.println("[PWR] idle: WiFi off (no radar activity 5s)");
@@ -460,7 +489,8 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
         delay(100);
         maxSpeed = 0;               // Tracks the max speed over the entire pass
         bool photo_taken = false;   // ensures we capture at most one frame per run
-        camera_fb_t* fb = nullptr;  // held framebuffer, handed to Core 0 for streaming
+        uint8_t* photo_buf = nullptr;  // ps_malloc'd JPEG copy handed to Core 0 (decoupled from the camera fb pool)
+        size_t   photo_len = 0;
 
         // --- Per-event telemetry accumulators (uploaded with the run) ------
         // Seeded from the arming sample so it's counted; updated each loop.
@@ -504,6 +534,13 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
         const char* plate = "legacy";
 
         while (speed >= min_speed) {  // Track the car's maximum speed over the whole pass.
+          // Failsafe: a genuine pass is over in seconds. If we're still here after
+          // MAX_RUN_MS the input is sustained noise or a bad config -- finalize
+          // what we have and re-arm rather than let this loop wedge the task.
+          if (millis() - run_start > MAX_RUN_MS) {
+            Serial.println("[RUN] max duration exceeded (noise/misconfig?); finalizing");
+            break;
+          }
           speed = get_speed(is_kph);  // Get speed (KPH or MPH per setting) from STM32 via UART
           // (live readout is served on demand via GET /api/state; nothing to push here)
 
@@ -570,7 +607,22 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
                 Serial.printf("[PHOTO] capture: plate=%s speed=%d max=%d mag=%u peak=%u thr_front=%d thr_rear=%d\n",
                               plate, speed, maxSpeed, (unsigned)g_last_peak_mag,
                               (unsigned)peak_mag, thr_front, thr_rear);
-                fb = capturePhoto();  // keep the framebuffer; Core 0 returns it after upload
+                camera_fb_t* fb = capturePhoto();
+                if (fb != nullptr) {
+                  // Copy the JPEG into PSRAM and release the camera framebuffer
+                  // right away, so the driver's 2-deep fb pool is never held
+                  // across the (slow, seconds-long) upload -- otherwise a later
+                  // capturePhoto() here (or the aiming stream) could block the
+                  // radar task waiting for a free buffer.
+                  photo_buf = (uint8_t*)ps_malloc(fb->len);
+                  if (photo_buf != nullptr) {
+                    memcpy(photo_buf, fb->buf, fb->len);
+                    photo_len = fb->len;
+                  } else {
+                    Serial.println("[PHOTO] ps_malloc failed; uploading speed-only");
+                  }
+                  esp_camera_fb_return(fb);
+                }
                 photo_taken = true;
               }
             }
@@ -606,8 +658,9 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
         // actually succeeded; otherwise it uploads speed-only.
         UploadRequest req;
         req.speed_actual = maxSpeed;
-        req.has_photo = (fb != nullptr);
-        req.fb = fb;
+        req.has_photo = (photo_buf != nullptr);
+        req.photo_buf = photo_buf;
+        req.photo_len = photo_len;
         req.direction = (uint8_t)direction;
         req.mag_trend = mag_trend;
         req.peak_mag = peak_mag;
@@ -626,8 +679,8 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
         eventsRecord(req.speed_actual, req.direction, req.peak_mag);
         if (xQueueSend(uploadQueue, &req, 0) != pdTRUE) {
           Serial.println("[RUN] upload queue FULL, dropping event");
-          if (fb != nullptr) {
-            esp_camera_fb_return(fb);  // avoid leaking the framebuffer
+          if (photo_buf != nullptr) {
+            free(photo_buf);  // avoid leaking the PSRAM JPEG copy
           }
         }
 
@@ -667,8 +720,8 @@ void taskCore0(void* parameter) {
     if (xQueueReceive(uploadQueue, &req, pdMS_TO_TICKS(200)) == pdTRUE) {
       Serial.printf("[UPLOAD] dequeued event: speed=%d has_photo=%d\n", req.speed_actual, (int)req.has_photo);
       sendUpload(req);
-      if (req.fb != nullptr) {
-        esp_camera_fb_return(req.fb);  // release the framebuffer Core 1 captured
+      if (req.photo_buf != nullptr) {
+        free(req.photo_buf);  // release the PSRAM JPEG copy Core 1 handed us
       }
     }
 

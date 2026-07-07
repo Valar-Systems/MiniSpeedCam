@@ -31,6 +31,8 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <ArduinoJson.h>
+#include <esp_random.h>   // esp_random(): mints the per-boot portal CSRF token
+#include <string.h>       // strchr/strlen for the request-auth checks
 #include "esp_http_server.h"
 
 // Compose the installed-firmware version string (ESP is compile-time; STM is
@@ -53,6 +55,7 @@ static const char CONFIG_HTML[] PROGMEM = R"HTML(<!doctype html>
 <head>
 <meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=csrf content="__CSRF__">
 <title>MiniSpeedCam</title>
 <style>
 :root{--bg:#0f1115;--card:#1a1d24;--fg:#e6e8eb;--mut:#9aa0a6;--acc:#3b82f6;--ok:#22c55e;--bd:#2a2e37}
@@ -170,7 +173,8 @@ async function refresh(){
     filled=true;
   }
 }
-const post=(p,b)=>fetch(p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
+const csrf=(document.querySelector('meta[name=csrf]')||{}).content||'';
+const post=(p,b)=>fetch(p,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify(b)});
 async function saveSettings(){
   await post('/api/settings',{
     isKph:$('isKph').checked,powerSaver:$('powerSaver').checked,
@@ -277,11 +281,83 @@ static bool portalReadBody(httpd_req_t* req, char* buf, size_t buf_size) {
   return true;
 }
 
-// GET / -> the config page (served straight from flash).
+// --- Portal request authentication ------------------------------------------
+// The config portal has no user login, so its state-changing endpoints were
+// reachable by any LAN client and (worse) forgeable from any web page the owner
+// merely visited, via DNS-rebinding CSRF -- which could silently repoint the
+// upload endpoint and exfiltrate the Bearer token, device_token, and photos.
+// Two independent defenses close the browser-driven paths:
+//   (1) Host allowlist: the portal is only ever reached as an IPv4 literal
+//       (AP 192.168.4.1 or the STA IP) or an <hostname>.local mDNS name. A
+//       DNS-rebinding page sends its own domain in the Host header, so it is
+//       rejected. Legitimate access (always IP or .local) is unaffected.
+//   (2) CSRF token: a per-boot secret embedded in the served page and required
+//       in an X-CSRF-Token header on every mutating POST. It lives only in the
+//       same-origin page body (an attacker can't read it cross-origin), and
+//       being a custom header it forces a CORS preflight we never grant, so a
+//       cross-site POST can't even be sent; a blind forged POST lacks the token.
+// The physical WiFi-reset button (wifiResetButton) remains an out-of-band
+// recovery path, so a bad token can never lock the owner out of the device.
+//
+// Residual (documented, not closed here): a malicious client already on the
+// device's LAN can fetch the page over plain HTTP, read the token, and drive the
+// portal. Closing that needs device-side TLS or a provisioned admin password
+// (a hardware/label decision), tracked separately.
+static char portal_csrf[17] = {0};   // 16 hex chars + NUL; minted in load_config_portal()
+
+// Constant-time compare so a wrong token can't be recovered byte-by-byte via
+// response timing. Compares exactly n bytes.
+static bool portalTokenEquals(const char* a, const char* b, size_t n) {
+  uint8_t diff = 0;
+  for (size_t i = 0; i < n; i++) diff |= (uint8_t)a[i] ^ (uint8_t)b[i];
+  return diff == 0;
+}
+
+// Gate for state-changing handlers: Host allowlist + CSRF token. On failure it
+// sends 403 and returns false (the caller returns ESP_FAIL).
+static bool portalRequireAuth(httpd_req_t* req) {
+  // (1) Host allowlist -- only enforced when a Host header is present (browsers
+  // always send one; the rebinding attack depends on it). Accept an IPv4
+  // literal (optionally :port) or a case-insensitive *.local name.
+  char host[64] = {0};
+  if (httpd_req_get_hdr_value_str(req, "Host", host, sizeof(host)) == ESP_OK) {
+    char* colon = strchr(host, ':');
+    if (colon) *colon = '\0';                        // drop :port
+    for (char* p = host; *p; p++) {                  // lowercase in place
+      if (*p >= 'A' && *p <= 'Z') *p += 32;
+    }
+    size_t len = strlen(host);
+    bool is_local = (len >= 6) && (strcmp(host + len - 6, ".local") == 0);
+    bool is_ipv4 = (len > 0);
+    for (size_t i = 0; i < len; i++) {
+      if (!((host[i] >= '0' && host[i] <= '9') || host[i] == '.')) { is_ipv4 = false; break; }
+    }
+    if (!is_local && !is_ipv4) {
+      httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "bad host");
+      return false;
+    }
+  }
+
+  // (2) CSRF token: must equal the per-boot token embedded in the page.
+  char tok[24] = {0};
+  size_t tlen = strlen(portal_csrf);
+  if (httpd_req_get_hdr_value_str(req, "X-CSRF-Token", tok, sizeof(tok)) != ESP_OK ||
+      strlen(tok) != tlen || !portalTokenEquals(tok, portal_csrf, tlen)) {
+    httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "auth");
+    return false;
+  }
+  return true;
+}
+
+// GET / -> the config page (served from flash with the per-boot CSRF token
+// substituted in). The page load is unauthenticated on purpose -- it is how the
+// legitimate browser obtains the token it then presents on every mutating POST.
 static esp_err_t portalRootGet(httpd_req_t* req) {
   httpd_resp_set_type(req, "text/html");
   httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-  return httpd_resp_send(req, CONFIG_HTML, HTTPD_RESP_USE_STRLEN);
+  String page = CONFIG_HTML;              // PROGMEM -> heap (~5.6 KB, transient)
+  page.replace("__CSRF__", portal_csrf);  // single placeholder in the <head>
+  return httpd_resp_send(req, page.c_str(), page.length());
 }
 
 // GET /api/state -> JSON snapshot polled by the page.
@@ -308,6 +384,7 @@ static esp_err_t portalEventsGet(httpd_req_t* req) {
 // POST /api/settings -> device settings; written to globals + NVS, applied live
 // (no reboot). Each field falls back to its current value if absent/malformed.
 static esp_err_t portalSettingsPost(httpd_req_t* req) {
+  if (!portalRequireAuth(req)) return ESP_FAIL;
   char body[512];
   if (!portalReadBody(req, body, sizeof(body))) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "body");
@@ -326,6 +403,7 @@ static esp_err_t portalSettingsPost(httpd_req_t* req) {
   if (!ps && power_saver) connect_wifi = true;
   power_saver = ps;
   min_speed          = doc["minSpeed"]    | min_speed;
+  if (min_speed < 1) min_speed = 1;  // never 0: taskCore1's `while (speed >= min_speed)` would run forever (blanking the field posts 0)
   photo_speed        = doc["photoSpeed"]  | photo_speed;
   min_signal         = doc["minSignal"]   | min_signal;
   photo_signal       = doc["photoSignal"] | photo_signal;
@@ -353,6 +431,7 @@ static esp_err_t portalSettingsPost(httpd_req_t* req) {
 // from here -- use Clear Settings for that). A blank API base restores the
 // compile-time default via rebuildServerEndpoints().
 static esp_err_t portalWifiPost(httpd_req_t* req) {
+  if (!portalRequireAuth(req)) return ESP_FAIL;
   char body[512];
   if (!portalReadBody(req, body, sizeof(body))) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "body");
@@ -367,6 +446,13 @@ static esp_err_t portalWifiPost(httpd_req_t* req) {
   String newPass = doc["password"] | "";
   String newBase = doc["apiBase"]  | "";
   newBase.trim();
+  // Reject a malformed data-server base early. The auth gate above already
+  // blocks a remote attacker from repointing this, but this keeps a fat-fingered
+  // value (or a non-http scheme) from silently disabling uploads after reboot.
+  if (newBase.length() > 0 && !newBase.startsWith("http://") && !newBase.startsWith("https://")) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "apiBase scheme");
+    return ESP_FAIL;
+  }
   preferences.putString("ssid", newSsid);
   if (newPass.length() > 0) preferences.putString("pass", newPass);
   preferences.putString("api_base", newBase);
@@ -382,6 +468,7 @@ static esp_err_t portalWifiPost(httpd_req_t* req) {
 // connectWifiAP() fails to associate and brings up the captive AP. Mirrors the
 // old buttonClearNetworkCall (including preferences.end() before the restart).
 static esp_err_t portalClearPost(httpd_req_t* req) {
+  if (!portalRequireAuth(req)) return ESP_FAIL;
   preferences.putInt("wifi_set", 0);
   preferences.putString("ssid", "NOT_SET");
   preferences.putString("pass", "NOT_SET");
@@ -398,6 +485,7 @@ static esp_err_t portalClearPost(httpd_req_t* req) {
 // streamService() does the camera/server work and the auto-off timeout, so all
 // of that stays on one task (matches the old aimingStreamCall).
 static esp_err_t portalStreamPost(httpd_req_t* req) {
+  if (!portalRequireAuth(req)) return ESP_FAIL;
   char body[128];
   if (!portalReadBody(req, body, sizeof(body))) {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "body");
@@ -424,6 +512,7 @@ static esp_err_t portalStreamPost(httpd_req_t* req) {
 // the next time it's idle, bypassing the periodic timer. The result appears in
 // the "Update status" line the page already polls.
 static esp_err_t portalOtaCheckPost(httpd_req_t* req) {
+  if (!portalRequireAuth(req)) return ESP_FAIL;
   ota_check_now = true;
   httpd_resp_set_type(req, "application/json");
   return httpd_resp_sendstr(req, "{\"ok\":true}");
@@ -438,6 +527,12 @@ static httpd_handle_t config_httpd = NULL;
  * netifs, so the page is reachable in both modes (192.168.4.1 in AP mode).
  */
 void load_config_portal(void) {
+  // Mint the per-boot CSRF token (hardware RNG) before serving any page. RAM
+  // only -- not persisted and NOT the cloud device_token, so embedding it in the
+  // page is harmless. A reboot simply invalidates open pages (they refresh).
+  for (int i = 0; i < 16; i += 8) snprintf(portal_csrf + i, 9, "%08x", (unsigned)esp_random());
+  portal_csrf[16] = '\0';
+
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port      = 80;
   config.ctrl_port        = 32768;  // default

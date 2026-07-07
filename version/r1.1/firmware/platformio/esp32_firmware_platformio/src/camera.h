@@ -110,12 +110,13 @@ int cameraSetup(void) {
 }
 
 /**
- * Capture a single JPEG frame and KEEP its framebuffer for streaming upload.
+ * Capture a single JPEG frame and return its framebuffer.
  *
- * Unlike a fire-and-forget capture, the returned framebuffer is NOT released
- * here: Core 0's uploader base64-encodes and streams straight from it (see
- * StreamingUploadBody in api.h) and MUST call esp_camera_fb_return() when
- * done. Returns nullptr on capture failure (the run then uploads speed-only).
+ * The framebuffer is NOT released here; the CALLER (taskCore1) must
+ * esp_camera_fb_return() it. taskCore1 copies the JPEG into a PSRAM buffer and
+ * returns the framebuffer immediately, so the driver's fb pool is never held
+ * across the slow upload (which would block a subsequent capture). Returns
+ * nullptr on capture failure (the run then uploads speed-only).
  */
 camera_fb_t* capturePhoto(void) {
   camera_fb_t* fb = esp_camera_fb_get();  // Capture photo

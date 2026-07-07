@@ -47,6 +47,14 @@ volatile uint16_t g_last_peak_snr;  // FFT peak SNR x10 from the most recent get
 volatile uint32_t g_reject_speed;
 volatile uint32_t g_reject_proximity;
 
+// Consecutive get_speed() polls that got NO reply at all from the STM32 -- a
+// dead/mute radar link (crash or mid-failed reflash), distinct from a valid
+// "no target" reply which still arrives as a checksummed 0-speed line. Reset to
+// 0 on any received line. The power-saver paths read this (via stmLinkDead() in
+// radar.h) so they don't drop WiFi while the radar is dead -- keeping the portal
+// and OTA reachable so the STM can be reflashed instead of the device stranding.
+volatile uint32_t g_stm_no_reply_streak = 0;
+
 // STM32 firmware version, queried over UART at boot (the 'v' command). Stays
 // "unknown" on older STM32 firmware that predates 'v'. Reported in the
 // heartbeat so the cloud can tell whether the STM32 needs reflashing.
@@ -87,11 +95,13 @@ volatile unsigned long stream_deadline; // millis() at which the stream auto-sto
 // --- Core 1 -> Core 0 upload handoff ---
 // One tracking run produces one UploadRequest, posted to uploadQueue when the
 // run ends (so speed_actual is final). Core 0 blocks on the queue instead of
-// polling flags, and owns `fb`: it must esp_camera_fb_return(fb) after sending.
+// polling flags, and owns `photo_buf`: it must free(photo_buf) after sending.
 struct UploadRequest {
   int speed_actual;   // Final max speed for the run, in the configured units
-  bool has_photo;     // true if fb holds a captured JPEG to upload
-  camera_fb_t* fb;    // PSRAM framebuffer to stream (nullptr when has_photo is false)
+  bool has_photo;     // true if photo_buf holds a captured JPEG to upload
+  uint8_t* photo_buf; // ps_malloc'd JPEG copy to stream (nullptr when no photo). Core 0 free()s it after
+  size_t   photo_len; // byte length of photo_buf. Decoupled from the camera driver's fb pool so a slow
+                      // upload can never hold a framebuffer and block a later capturePhoto() on Core 1.
 
   // --- Per-event telemetry (forwarded to the cloud by sendUpload) ---
   // Captured over the whole pass so each reading carries its own context.

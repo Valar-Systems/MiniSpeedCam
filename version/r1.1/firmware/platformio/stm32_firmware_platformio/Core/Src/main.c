@@ -75,6 +75,27 @@
  * catch very brief passes. */
 #define ANALOG_MIN_VALID_DETECTIONS 5
 
+/* --- Doppler-to-speed conversion (24.125 GHz CDM324) --------------------- *
+ * A target moving at v produces a Doppler shift f_d = 2*v*f0/c. The FFT peak
+ * bin is first turned into that frequency in Hz (bin * ANALOG_SAMPLE_RATE_HZ /
+ * N, see analog_compute_fft_on_cplted_sequence), then into speed with the
+ * factors below. BOTH unit factors are derived from ONE physical constant so
+ * the 'm' and 'k' replies can never drift apart -- they must stay in the exact
+ * 1.60934 mph<->km/h ratio. The previous hand-tuned literals (0.1449275 mph,
+ * 0.2262295 kph) did NOT: they implied two different radar frequencies (23.14
+ * vs 23.86 GHz) and over-reported by +4.3% / +1.1%, always high (the accusatory
+ * direction). NOTE: this changes every reported speed by 1-4%; re-verify on the
+ * tuning-fork bench (a 2048 Hz tone must read 28.5 mph / 45.8 km/h, and the two
+ * units must agree through the 1.609 conversion) before releasing. */
+#define CDM324_F0_HZ            24.125e9f
+#define SPEED_OF_LIGHT_MPS      299792458.0f
+#define DOPPLER_HZ_PER_MPS      (2.0f * CDM324_F0_HZ / SPEED_OF_LIGHT_MPS)   /* 160.945 */
+#define MPS_PER_MPH             0.44704f
+#define MPS_PER_KPH             (1.0f / 3.6f)
+/* Reply carries speed*10, so factor = 10 / (Doppler Hz per unit). */
+#define FFT_HZ_TO_MPH_X10       (10.0f / (DOPPLER_HZ_PER_MPS * MPS_PER_MPH))  /* 0.138988 */
+#define FFT_HZ_TO_KPH_X10       (10.0f / (DOPPLER_HZ_PER_MPS * MPS_PER_KPH))  /* 0.223680 */
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -91,8 +112,6 @@ UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
 
-/* Boolean set when a DMA TX transfer is in progress */
-volatile BOOL debug_uart_tx_in_progress = FALSE;
 // Define to enable current transient test
 //#define CUR_TRANSIENT_TEST
 
@@ -254,11 +273,20 @@ int main(void) {
 	/* USER CODE BEGIN WHILE */
 	while (1) {
 
-		/* Pet the watchdog every iteration (the loop spins fast when idle). */
-		IWDG->KR = 0xAAAA;
-
 		/* Sequence of ADC measurements complete? */
 		if (analog_get_and_clear_adc_measurement_done() != FALSE) {
+			/* Pet the watchdog ONLY when a frame actually completed. Every useful
+			 * action below (FFT, the PA5 wake line, and the 'm'/'k'/'v' UART
+			 * replies) is gated on this flag, so an unconditional pet at the top
+			 * of the loop would keep feeding the dog even if the ADC/DMA pipeline
+			 * stalled (DMA/overrun error with no re-arm) -- leaving the MCU
+			 * silently deaf with the watchdog never firing. Frames complete every
+			 * ~29ms regardless of target presence or PA4 blanking (the blank check
+			 * is downstream of this flag), versus the ~2s IWDG timeout, so the
+			 * >50x margin means a genuine stall self-resets within ~2s while
+			 * normal operation can never trip it. */
+			IWDG->KR = 0xAAAA;
+
 			/* Every few ms we display the speed and depending on define not do anything with the data has the current draw is enough to have an impact on the +5V PSU */
 			if (fft_nb_counter++ == FFT_CNT_DISP) {
 				/* Reset counter */
@@ -347,7 +375,7 @@ int main(void) {
 				if (snr > 65535U) {
 					snr = 65535U;
 				}
-				float scale = (uart_input == 'k') ? 0.2262295f : 0.1449275f;
+				float scale = (uart_input == 'k') ? FFT_HZ_TO_KPH_X10 : FFT_HZ_TO_MPH_X10;
 				uart_reply_speed((uint16_t) (last_fft_return * scale),
 						(uint16_t) m, (uint16_t) snr);
 			} else if (uart_input == 'd') {
@@ -600,17 +628,23 @@ PUTCHAR_ESP_PROTOTYPE {
 }
 
 /*! \fn     debug_dma_output_buffer(uint8_t* buffer, uint16_t size)
- *   \brief  Send buffer over UART
+ *   \brief  Send a debug buffer over the USART2 (CH340) diagnostics port
  *   \param	buffer	pointer to the buffer
  *   \param	size	buffer size
- *   \note	Please note that this is done using DMA and isn't blocking!
+ *   \note	USART1 has NO TX DMA channel configured (MX_DMA_Init wires only the
+ *   		ADC on DMA1_Channel1), so huart1.hdmatx is NULL. The old
+ *   		HAL_UART_Transmit_DMA(&huart1,...) therefore either faulted or -- since
+ *   		debug_uart_tx_in_progress was never cleared (there is no
+ *   		TxCpltCallback) -- made the NEXT call spin forever in the busy-wait
+ *   		until the ~2s IWDG reset the MCU. A single stray 'a' byte on the noisy
+ *   		ESP link was enough to trigger it. Now a bounded blocking transmit on
+ *   		USART2 (where diagnostics belong) is used: it can never wedge the loop
+ *   		and never corrupts the USART1 speed protocol. Blocking, not DMA.
  */
 void debug_dma_output_buffer(uint8_t *buffer, uint16_t size) {
-	while (debug_uart_tx_in_progress != FALSE)
-		;
-	debug_uart_tx_in_progress = TRUE;
-	HAL_UART_Transmit_DMA(&huart1, buffer, size);
-	//HAL_UART_Transmit_DMA(&huart2, buffer, size);
+	/* 500ms timeout is a safety bound only: a 2KB dump is ~178ms at 115200,
+	 * comfortably under both this timeout and the ~2s watchdog. */
+	HAL_UART_Transmit(&huart2, buffer, size, 500);
 }
 
 /*! \fn     debug_get_char_from_uart(void)

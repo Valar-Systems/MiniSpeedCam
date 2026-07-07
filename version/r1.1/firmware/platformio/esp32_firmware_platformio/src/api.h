@@ -75,6 +75,18 @@ struct RadarBlankGuard {
   ~RadarBlankGuard() { radarBlank(false); }
 };
 
+// True while Core 0 is mid WiFi burst (upload / reconnect / OTA download -- the
+// RadarBlankGuard depth is nonzero), a finished run is still queued for upload,
+// or the STM32 is being reflashed. taskCore1's power-saver paths must NOT drop
+// WiFi while this holds: every burst blanks the radar so speed reads 0, which is
+// exactly what would arm the idle-WiFi-off timer -- a self-inflicted teardown
+// that kills the in-flight upload and starves the OTA download. See taskCore1.
+static inline bool coreNetBusy() {
+  return radarBlankDepth > 0
+      || stm_flash_busy
+      || (uploadQueue != nullptr && uxQueueMessagesWaiting(uploadQueue) > 0);
+}
+
 /**
  * Apply the TLS trust policy to a secure client.
  *
@@ -638,19 +650,19 @@ private:
  * Upload one capture event to minispeedcam.com (runs on Core 0).
  *
  * Always POSTs to the single `server_capture` endpoint. When the event
- * carries a photo (req.has_photo / req.fb) the JPEG is base64-streamed on
- * the fly straight from the PSRAM framebuffer via StreamingUploadBody, so
- * the image is never duplicated in heap; otherwise a short speed-only JSON
+ * carries a photo (req.has_photo / req.photo_buf) the JPEG is base64-streamed
+ * on the fly straight from the PSRAM copy via StreamingUploadBody, so the
+ * image is never duplicated in heap; otherwise a short speed-only JSON
  * body is sent. The `send_photo` field tells the server which case it is.
  *
- * The caller owns req.fb and must esp_camera_fb_return() it after this
- * returns. speed_actual is already final (the run has ended), so there is
+ * The caller owns req.photo_buf and must free() it after this returns.
+ * speed_actual is already final (the run has ended), so there is
  * no waiting/spinning here.
  */
 void sendUpload(const UploadRequest& req) {
 
   Serial.printf("[UPLOAD] start: %s, heap=%u\n",
-                (req.has_photo && req.fb != nullptr) ? "photo" : "speed-only",
+                (req.has_photo && req.photo_buf != nullptr) ? "photo" : "speed-only",
                 (unsigned)ESP.getFreeHeap());
 
   // Identity missing (should never happen post-boot): nothing to authenticate
@@ -738,8 +750,8 @@ void sendUpload(const UploadRequest& req) {
                 "\",\"frame_count\":\"" + (unsigned)req.frame_count +
                 "\",\"duration_ms\":\"" + (unsigned long)req.duration_ms + "\"";
 
-  if (req.has_photo && req.fb != nullptr) {
-    // Stream prologue + base64(framebuffer) + epilogue without ever holding
+  if (req.has_photo && req.photo_buf != nullptr) {
+    // Stream prologue + base64(JPEG) + epilogue without ever holding
     // the whole encoded image in RAM.
     String prologue = "{\"send_photo\":\"true\",\"device_token\":\"";
     prologue += device_token;
@@ -750,7 +762,7 @@ void sendUpload(const UploadRequest& req) {
     prologue += ",\"photo\":{\"filename\":\"image.jpg\",\"contents\":\"";
     String epilogue = "\"}}";
 
-    StreamingUploadBody body(prologue, req.fb->buf, req.fb->len, epilogue);
+    StreamingUploadBody body(prologue, req.photo_buf, req.photo_len, epilogue);
     Serial.printf("[UPLOAD] streaming POST, body=%u bytes\n", (unsigned)body.totalSize());
     httpsResponseCode = https.sendRequest("POST", &body, body.totalSize());
   } else {
