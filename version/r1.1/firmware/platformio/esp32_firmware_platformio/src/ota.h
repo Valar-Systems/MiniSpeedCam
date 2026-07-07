@@ -53,6 +53,14 @@
 #define OTA_STM_RETRY_MS (5UL * 60UL * 1000UL)   // 5 minutes
 #endif
 
+// Upper bound the installer waits for an in-progress speed run to step aside
+// before seizing UART1 (see otaInstallStm). A run breaks within one loop
+// iteration once it sees stm_flash_busy, so the real wait is well under a
+// second; this cap only guards against a wedged run blocking OTA forever.
+#ifndef STM_FLASH_PARK_MS
+#define STM_FLASH_PARK_MS (3000UL)
+#endif
+
 // Format a status line into ota_status (mirrored to the web UI by taskCore1)
 // and echo it to the serial console.
 static void otaSetStatus(const char* fmt, ...) {
@@ -191,14 +199,14 @@ bool otaCheckGithub() {
 
   if (!ota_esp_available && !ota_stm_available) {
     // Both current -- the common, friendly "nothing to do" result.
-    otaSetStatus("Up to date (ESP %s, STM %s)", FW_VERSION, stm_fw_version.c_str());
+    otaSetStatus("Up to date (ESP %s, STM %s)", FW_VERSION, stm_fw_version);
   } else {
     // Something newer is available (and about to be applied below) -- show what.
     char espinfo[44], stminfo[44];
     if (ota_esp_available) snprintf(espinfo, sizeof espinfo, "%s->%s", FW_VERSION, ota_esp_version.c_str());
     else                   snprintf(espinfo, sizeof espinfo, "%s ok", FW_VERSION);
-    if (ota_stm_available) snprintf(stminfo, sizeof stminfo, "%s->%s", stm_fw_version.c_str(), ota_stm_version.c_str());
-    else                   snprintf(stminfo, sizeof stminfo, "%s ok", stm_fw_version.c_str());
+    if (ota_stm_available) snprintf(stminfo, sizeof stminfo, "%s->%s", stm_fw_version, ota_stm_version.c_str());
+    else                   snprintf(stminfo, sizeof stminfo, "%s ok", stm_fw_version);
     otaSetStatus("Update available: ESP %s | STM %s", espinfo, stminfo);
   }
   return true;
@@ -321,7 +329,19 @@ bool otaInstallStm() {
 
   otaSetStatus("STM %s: flashing...", ota_stm_version.c_str());
   stm_flash_busy = true;   // Core 0 takes UART1; taskCore1 pauses radar polling
-  delay(200);              // let any in-flight get_speed() on taskCore1 finish first
+
+  // Park until any speed run in progress on taskCore1 has finished before we
+  // seize UART1. otaAutoService() only calls us when !g_run_active, but a run
+  // can arm in the window between that check and here. The run loop breaks as
+  // soon as it sees stm_flash_busy (just set above), clearing g_run_active
+  // within an iteration -- so this normally returns in well under a second.
+  // Bounded so a wedged run can never block OTA indefinitely.
+  {
+    unsigned long park_start = millis();
+    while (g_run_active && (millis() - park_start) < STM_FLASH_PARK_MS) delay(20);
+    if (g_run_active) Serial.println("[OTA] STM flash park-wait timed out; proceeding");
+  }
+  delay(200);              // let any in-flight arming get_speed() (<=50ms) drain first
 
   // The STM32 ROM bootloader is always re-enterable (BOOT0 + reset), so a NACK
   // or a UART glitch mid-flash (both plausible on this noisy shared rail) is
@@ -347,12 +367,12 @@ bool otaInstallStm() {
 
   // Confirm by re-reading the version (still under stm_flash_busy, so UART1 is ours).
   delay(200);
-  stm_fw_version = get_stm32_version();
-  for (int i = 0; i < 3 && stm_fw_version == "unknown"; i++) { delay(50); stm_fw_version = get_stm32_version(); }
+  strlcpy(stm_fw_version, get_stm32_version().c_str(), sizeof stm_fw_version);
+  for (int i = 0; i < 3 && strcmp(stm_fw_version, "unknown") == 0; i++) { delay(50); strlcpy(stm_fw_version, get_stm32_version().c_str(), sizeof stm_fw_version); }
   stm_flash_busy = false;  // release UART1 back to taskCore1
 
   ota_stm_available = false;  // consumed
-  otaSetStatus("STM updated -> %s", stm_fw_version.c_str());
+  otaSetStatus("STM updated -> %s", stm_fw_version);
   return true;
 }
 

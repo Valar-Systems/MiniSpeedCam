@@ -213,12 +213,12 @@ void setup() {
   // Read the STM32 firmware version now (before taskCore1 starts polling, so it
   // can't race get_speed() on the shared UART). Retry a few times in case the
   // STM32 is mid-FFT when the first query lands; stays "unknown" on old firmware.
-  stm_fw_version = get_stm32_version();
-  for (int i = 0; i < 3 && stm_fw_version == "unknown"; i++) {
+  strlcpy(stm_fw_version, get_stm32_version().c_str(), sizeof stm_fw_version);
+  for (int i = 0; i < 3 && strcmp(stm_fw_version, "unknown") == 0; i++) {
     delay(50);
-    stm_fw_version = get_stm32_version();
+    strlcpy(stm_fw_version, get_stm32_version().c_str(), sizeof stm_fw_version);
   }
-  Serial.printf("[FW] esp=%s stm=%s\n", FW_VERSION, stm_fw_version.c_str());
+  Serial.printf("[FW] esp=%s stm=%s\n", FW_VERSION, stm_fw_version);
   // Connect to WiFi or create Access Point
   connectWifiAP();
   if (WiFi.getMode() == WIFI_STA) {
@@ -541,6 +541,19 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
             Serial.println("[RUN] max duration exceeded (noise/misconfig?); finalizing");
             break;
           }
+
+          // Preempt the pass if the aiming stream comes up or an STM flash begins
+          // mid-run. capturePhoto() below shares the camera's 2-deep fb pool with
+          // the streaming task, and get_speed() above shares UART1 with the STM
+          // bootloader; running either concurrently races a resource this loop
+          // assumes it owns. Finalize what we have and re-arm instead. Clearing
+          // g_run_active at the end of the pass also releases the OTA installer's
+          // park-wait, so a pending flash proceeds the moment we step aside.
+          if (stream_active || streamBusy() || stm_flash_busy) {
+            Serial.println("[RUN] preempted by stream/flash; finalizing");
+            break;
+          }
+
           speed = get_speed(is_kph);  // Get speed (KPH or MPH per setting) from STM32 via UART
           // (live readout is served on demand via GET /api/state; nothing to push here)
 
@@ -604,6 +617,13 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
                 if (direction == 0) direction = 2;  // well past the peak => receding
               }
               if (fire) {
+                // Re-check preemption right before touching the camera. The
+                // top-of-loop guard can't see a stream that came up later in
+                // THIS iteration, and capturePhoto() shares the camera's 2-deep
+                // fb pool (and the sensor's framesize) with the aiming-stream
+                // task. If a stream/flash is now up, bail: the pass finalizes
+                // speed-only rather than race the stream on the sensor.
+                if (stream_active || streamBusy() || stm_flash_busy) break;
                 Serial.printf("[PHOTO] capture: plate=%s speed=%d max=%d mag=%u peak=%u thr_front=%d thr_rear=%d\n",
                               plate, speed, maxSpeed, (unsigned)g_last_peak_mag,
                               (unsigned)peak_mag, thr_front, thr_rear);
@@ -674,14 +694,24 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
                       (unsigned)req.mean_speed_x10, (unsigned)req.frame_count,
                       (unsigned long)req.duration_ms, (unsigned)req.peak_mag,
                       (unsigned)req.peak_snr, (int)req.has_photo);
-        // Also record into the local ring served by GET /api/events, so a LAN companion
-        // (e.g. the Blipscope "Speedscope" edition) can show recent speeds without the cloud.
-        eventsRecord(req.speed_actual, req.direction, req.peak_mag);
-        if (xQueueSend(uploadQueue, &req, 0) != pdTRUE) {
-          Serial.println("[RUN] upload queue FULL, dropping event");
-          if (photo_buf != nullptr) {
-            free(photo_buf);  // avoid leaking the PSRAM JPEG copy
+        // A pass can reach here with maxSpeed still 0: the preemption break
+        // above fired on the very first iteration (before get_speed() updated
+        // maxSpeed), or the first sample simply dropped to 0. That is not a real
+        // detection, so don't push a phantom 0 mph event into the local ring or
+        // up to the cloud -- just release the (normally absent) photo buffer.
+        if (maxSpeed > 0) {
+          // Record into the local ring served by GET /api/events, so a LAN companion
+          // (e.g. the Blipscope "Speedscope" edition) can show recent speeds without the cloud.
+          eventsRecord(req.speed_actual, req.direction, req.peak_mag);
+          if (xQueueSend(uploadQueue, &req, 0) != pdTRUE) {
+            Serial.println("[RUN] upload queue FULL, dropping event");
+            if (photo_buf != nullptr) {
+              free(photo_buf);  // avoid leaking the PSRAM JPEG copy
+            }
           }
+        } else {
+          Serial.println("[RUN] no valid sample (preempted/dropped); event discarded");
+          if (photo_buf != nullptr) free(photo_buf);  // never leak, even on the discard path
         }
 
         g_run_active = false;  // pass over; Core 0's auto-update service may act again

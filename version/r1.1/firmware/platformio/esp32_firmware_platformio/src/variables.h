@@ -58,7 +58,15 @@ volatile uint32_t g_stm_no_reply_streak = 0;
 // STM32 firmware version, queried over UART at boot (the 'v' command). Stays
 // "unknown" on older STM32 firmware that predates 'v'. Reported in the
 // heartbeat so the cloud can tell whether the STM32 needs reflashing.
-String stm_fw_version = "unknown";
+//
+// A fixed char[] rather than a String on purpose: this value is rewritten on
+// taskCore0 after an STM auto-flash while the httpd task may be reading it to
+// build /api/state (firmwareVersionText()). A String reassignment frees its old
+// heap buffer, which is a use-after-free for that concurrent reader; a fixed
+// buffer is only ever overwritten in place, so the worst case is a harmless
+// torn read, never a freed-pointer dereference. Sized to hold the 'v' reply
+// (radar.h reads at most a 23-char version before NUL).
+char stm_fw_version[24] = "unknown";
 
 // Power-Saver Mode (persisted in NVS). When true the radar loop drops WiFi
 // during the idle/sleep windows to save power; when false the device never

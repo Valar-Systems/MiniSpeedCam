@@ -264,12 +264,27 @@ static void portalBuildState(String& out) {
   serializeJson(doc, out);
 }
 
+// Wall-clock cap on assembling one request body. Our bodies are tiny JSON that
+// arrive in a few milliseconds, so this only ever trips on a stalled/hostile
+// client (see the slow-loris note below).
+#ifndef PORTAL_BODY_TIMEOUT_MS
+#define PORTAL_BODY_TIMEOUT_MS (3000UL)
+#endif
+
 // Read a small request body into buf (NUL-terminated). Returns false on a recv
-// error or if the body is larger than the buffer (our bodies are tiny JSON).
+// error, if the body is larger than the buffer (our bodies are tiny JSON), or
+// if it doesn't fully arrive within PORTAL_BODY_TIMEOUT_MS.
 static bool portalReadBody(httpd_req_t* req, char* buf, size_t buf_size) {
   if (req->content_len >= buf_size) return false;
   size_t total = 0;
+  const unsigned long start = millis();
   while (total < req->content_len) {
+    // Bound total assembly time. Without this a slow-loris client -- one that
+    // opens the socket and then dribbles or stalls the body -- pins an httpd
+    // worker indefinitely on repeated recv timeouts (the `continue` below),
+    // and since the portal server runs a single worker that wedges the whole
+    // config UI. A legitimate body completes far inside this window.
+    if ((unsigned long)(millis() - start) > PORTAL_BODY_TIMEOUT_MS) return false;
     int r = httpd_req_recv(req, buf + total, req->content_len - total);
     if (r <= 0) {
       if (r == HTTPD_SOCK_ERR_TIMEOUT) continue;
@@ -543,6 +558,10 @@ void load_config_portal(void) {
   config.max_uri_handlers = 12;   // page + /api/* handlers + /api/events + the aiming stream
   config.lru_purge_enable = true;
   config.stack_size       = 8192;   // headroom for ArduinoJson + String building
+  // Cap a single blocking recv so a stalled client can't pin the worker for the
+  // 5s default. Matched to portalReadBody's wall-clock body cap (seconds), so
+  // that cap is actually effective rather than being floored by this timeout.
+  config.recv_wait_timeout = PORTAL_BODY_TIMEOUT_MS / 1000;
 
   if (httpd_start(&config_httpd, &config) != ESP_OK) {
     Serial.println("[PORTAL] httpd_start FAILED");
