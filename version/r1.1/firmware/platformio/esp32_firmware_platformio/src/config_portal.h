@@ -98,6 +98,7 @@ button.warn{background:#3a2326;color:#f87171;border:1px solid #5b2a2e}
 <label class=switch><span>Power-Saver (drop WiFi when idle)</span><input type=checkbox id=powerSaver></label>
 <label><span>Minimum speed</span><input type=number id=minSpeed></label>
 <label><span>Photo speed</span><input type=number id=photoSpeed></label>
+<label><span>Speed correction (cosine; 1.000 = off)</span><input type=number id=speedCorr step=0.001 min=1 max=1.3></label>
 <label><span>Min signal (proximity, 0=off)</span><input type=number id=minSignal></label>
 <label><span>Photo signal (shared/default, 0=off)</span><input type=number id=photoSignal></label>
 <label><span>Photo signal FRONT (oncoming; raise=closer, 0=shared)</span><input type=number id=psFront></label>
@@ -164,6 +165,7 @@ async function refresh(){
     $('powerSaver').checked=s.powerSaver;
     $('minSpeed').value=s.minSpeed;
     $('photoSpeed').value=s.photoSpeed;
+    $('speedCorr').value=s.speedCorr;
     $('minSignal').value=s.minSignal;
     $('photoSignal').value=s.photoSignal;
     $('psFront').value=s.psFront;
@@ -179,6 +181,7 @@ async function saveSettings(){
   await post('/api/settings',{
     isKph:$('isKph').checked,powerSaver:$('powerSaver').checked,
     minSpeed:+$('minSpeed').value,photoSpeed:+$('photoSpeed').value,
+    speedCorr:+$('speedCorr').value,
     minSignal:+$('minSignal').value,photoSignal:+$('photoSignal').value,
     psFront:+$('psFront').value,psRear:+$('psRear').value});
   toast('Saved');
@@ -254,6 +257,7 @@ static void portalBuildState(String& out) {
   doc["powerSaver"]  = (bool)power_saver;
   doc["minSpeed"]    = min_speed;
   doc["photoSpeed"]  = photo_speed;
+  doc["speedCorr"]   = speed_correction;
   doc["minSignal"]   = min_signal;
   doc["photoSignal"] = photo_signal;
   doc["psFront"]     = photo_signal_front;
@@ -440,6 +444,13 @@ static esp_err_t portalSettingsPost(httpd_req_t* req) {
   min_speed          = doc["minSpeed"]    | min_speed;
   if (min_speed < 1) min_speed = 1;  // never 0: taskCore1's `while (speed >= min_speed)` would run forever (blanking the field posts 0)
   photo_speed        = doc["photoSpeed"]  | photo_speed;
+  // Installation cosine correction: accept only the physically honest range
+  // (see variables.h); anything outside it keeps the current value. NaN is
+  // rejected too, since NaN comparisons are false.
+  {
+    float sc = doc["speedCorr"] | speed_correction;
+    if (sc >= 1.0f && sc <= 1.3f) speed_correction = sc;
+  }
   min_signal         = doc["minSignal"]   | min_signal;
   photo_signal       = doc["photoSignal"] | photo_signal;
   photo_signal_front = doc["psFront"]     | photo_signal_front;
@@ -449,6 +460,7 @@ static esp_err_t portalSettingsPost(httpd_req_t* req) {
   preferences.putBool("power_saver", power_saver);
   preferences.putInt("min_speed", min_speed);
   preferences.putInt("photo_speed", photo_speed);
+  preferences.putFloat("speed_corr", speed_correction);
   preferences.putInt("min_signal", min_signal);
   preferences.putInt("photo_signal", photo_signal);
   preferences.putInt("ps_front", photo_signal_front);

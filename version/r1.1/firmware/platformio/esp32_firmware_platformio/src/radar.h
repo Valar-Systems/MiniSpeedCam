@@ -45,9 +45,11 @@ static inline bool stmLinkDead(void) { return g_stm_no_reply_streak >= STM_DEAD_
  * Query the STM32 for the most recent speed sample.
  *
  * @param kmh  true = request KPH, false = request MPH.
- * @return     Speed in the requested units. Returns 0 if the STM32 did
- *             not have data ready, or if the reading was implausible
- *             (negative / above MAX_PLAUSIBLE_SPEED) and treated as noise.
+ * @return     Speed in the requested units, multiplied by speed_correction
+ *             (the installation cosine factor; see variables.h). Returns 0
+ *             if the STM32 did not have data ready, or if the raw reading
+ *             was implausible (negative / above MAX_PLAUSIBLE_SPEED) and
+ *             treated as noise.
  */
 float get_speed(bool kmh) {
   // Clear the proximity + SNR readings up front: every early-return below (no
@@ -154,7 +156,11 @@ float get_speed(bool kmh) {
     }
   }
 
-  return speed;
+  // Apply the installation cosine correction (see variables.h) in the float
+  // domain, after the raw-value plausibility check above -- the ceiling always
+  // judges the physics measurement, never the corrected one -- and before the
+  // caller truncates to int, so the correction isn't quantized away.
+  return speed * speed_correction;
 }
 
 /**
