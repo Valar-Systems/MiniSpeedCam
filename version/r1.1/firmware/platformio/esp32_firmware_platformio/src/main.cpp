@@ -204,6 +204,10 @@ void setup() {
   photo_signal_rear = preferences.getInt("ps_rear", 0);       // REAR (receding) fire threshold; 0 = inherit photo_signal (lower to catch receding farther)
   is_kph = preferences.getBool("is_kph", 0);                  // Cars speed (MPH) when photo should be taken
   power_saver = preferences.getBool("power_saver", true);     // true = drop WiFi during idle (default); false = never sleep
+  // Installation cosine correction (see variables.h). The !(a && b) form also
+  // rejects NaN from a corrupted NVS float, since NaN comparisons are false.
+  speed_correction = preferences.getFloat("speed_corr", 1.0f);
+  if (!(speed_correction >= 1.0f && speed_correction <= 1.3f)) speed_correction = 1.0f;
 
   // Connect CDM324 sensor
   Serial.println("Connecting CDM324");

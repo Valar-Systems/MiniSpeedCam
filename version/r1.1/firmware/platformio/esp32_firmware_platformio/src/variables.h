@@ -25,6 +25,24 @@ int photo_speed;             // Speed threshold within a run that triggers a pho
 bool is_kph;                 // true = KPH units, false = MPH (persisted in NVS)
 int maxSpeed;                // Highest speed observed during the current tracking run
 
+// Installation cosine correction (persisted in NVS, key "speed_corr").
+// Doppler reads only the radial component: v_read = v_true * cos(theta),
+// where theta is the angle between the radar beam and the car's travel. A
+// unit aimed along the road from a lateral offset therefore reads slightly
+// LOW by a factor that is fixed for a given mounting -- e.g. a house-corner
+// mount 10.5 m off the centerline, measuring 50-70 m up-street, sits at
+// 8.6-12 deg off-axis and reads 1.1-2.2% low, so one constant (~1.016)
+// corrects it to within +/-0.6%. Applied on the ESP32 (in get_speed(), in
+// the float domain before the int truncation) so the STM32 keeps reporting
+// the untouched physics measurement for bench validation. It multiplies
+// every sample BEFORE the min_speed / photo_speed comparisons, so users set
+// thresholds in true road speed. Clamped to [1.00, 1.30]: cosine error can
+// only make the radar read low, never high, and 1.30 corresponds to ~40 deg
+// off-axis -- beyond that the angle changes too much across the measurement
+// zone for any single constant to be honest, and the fix is re-aiming the
+// unit along the road, not math.
+float speed_correction;      // 1.0 = off (default); set from the config portal
+
 // Proximity gate (persisted in NVS). The STM32 reports the FFT peak magnitude
 // alongside each speed; magnitude tracks received power (~1/r^4), so a distant
 // car reads weak while a car on the road reads strong. A run only arms when the
