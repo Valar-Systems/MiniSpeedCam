@@ -66,7 +66,9 @@ static portMUX_TYPE  g_speed_events_mux   = portMUX_INITIALIZER_UNLOCKED;
 
 // Radar task (Core 1): record one finished run. Called for every pass (speed-only or with
 // a photo), so the companion sees the same events the cloud does. Cheap + non-blocking.
-static void eventsRecord(int speed, uint8_t dir, uint16_t mag) {
+// Returns the monotonic seq assigned to this pass, so the caller can tie an attached photo
+// (last_photo.h) to the same event the /api/events feed and the "Last capture" card share.
+static uint32_t eventsRecord(int speed, uint8_t dir, uint16_t mag) {
   const int64_t now_us = esp_timer_get_time();   // read the clock outside the lock (no allocation)
   portENTER_CRITICAL(&g_speed_events_mux);
   SpeedEventRec& e = g_speed_events[g_speed_events_head];
@@ -78,7 +80,26 @@ static void eventsRecord(int speed, uint8_t dir, uint16_t mag) {
   e.at_us = now_us;
   g_speed_events_head = (g_speed_events_head + 1) % SPEED_EVENTS_CAP;
   if (g_speed_events_count < SPEED_EVENTS_CAP) g_speed_events_count++;
+  const uint32_t seq = e.seq;
   portEXIT_CRITICAL(&g_speed_events_mux);
+  return seq;
+}
+
+// httpd task: fetch the newest pass (speed/dir/unit/seq + age since it happened) for the
+// config portal's "Last capture" card. Returns false if no pass has been recorded yet.
+static bool eventsLatest(int* speed, uint8_t* dir, bool* kph, uint32_t* seq, uint32_t* ageSec) {
+  const int64_t now_us = esp_timer_get_time();
+  portENTER_CRITICAL(&g_speed_events_mux);
+  if (g_speed_events_count == 0) { portEXIT_CRITICAL(&g_speed_events_mux); return false; }
+  const int idx = ((g_speed_events_head - 1) % SPEED_EVENTS_CAP + SPEED_EVENTS_CAP) % SPEED_EVENTS_CAP;
+  const SpeedEventRec e = g_speed_events[idx];   // copy out under the lock
+  portEXIT_CRITICAL(&g_speed_events_mux);
+  if (speed)  *speed = e.speed;
+  if (dir)    *dir = e.dir;
+  if (kph)    *kph = (bool)e.kph;
+  if (seq)    *seq = e.seq;
+  if (ageSec) *ageSec = (uint32_t)((now_us - e.at_us) / 1000000LL);
+  return true;
 }
 
 // httpd task: serialize the ring newest-first into `out` (see the payload contract above).
