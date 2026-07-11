@@ -123,7 +123,7 @@ button.warn{background:#3a2326;color:#f87171;border:1px solid #5b2a2e}
 
 <div class=card>
 <h2>Status</h2>
-<div class=row><span class=k>Signal (proximity)</span><span class=v id=signal>&mdash;</span></div>
+<div class=row><span class=k>Radar signal (proximity)</span><span class=v id=signal>&mdash;</span></div>
 <div class=row><span class=k>Free heap (B)</span><span class=v id=heap>&mdash;</span></div>
 <div class=row><span class=k>Free PSRAM (B)</span><span class=v id=psram>&mdash;</span></div>
 <div class=row><span class=k>Uptime</span><span class=v id=uptime>&mdash;</span></div>
