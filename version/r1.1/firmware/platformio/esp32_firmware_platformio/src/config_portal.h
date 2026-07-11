@@ -82,6 +82,7 @@ button.warn{background:#3a2326;color:#f87171;border:1px solid #5b2a2e}
 .stream{display:none;width:100%;max-width:320px;margin-top:10px;border-radius:8px;background:#000;aspect-ratio:4/3}
 .big .u{font-size:15px;font-weight:500;color:var(--mut);margin-left:4px}
 .cap{display:none;width:100%;border-radius:8px;margin-top:12px;background:#000;aspect-ratio:4/3;object-fit:contain}
+.noimg{display:none;width:100%;aspect-ratio:4/3;margin-top:12px;border-radius:8px;background:#0c0e12;border:1px dashed var(--bd);color:var(--mut);font-size:14px;align-items:center;justify-content:center;text-align:center}
 .toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--ok);color:#06210f;padding:10px 16px;border-radius:8px;font-weight:600;opacity:0;transition:opacity .2s;pointer-events:none}
 .toast.show{opacity:1}
 </style>
@@ -99,7 +100,7 @@ button.warn{background:#3a2326;color:#f87171;border:1px solid #5b2a2e}
 <div class=big><span id=lastSpeed>&mdash;</span><span class=u id=lastUnit></span></div>
 <div class=muted id=lastMeta style=text-align:center>&mdash;</div>
 <img id=lastImg class=cap alt="last capture photo">
-<div class=muted id=lastNote style=display:none></div>
+<div id=lastNoImg class=noimg>No photo available</div>
 </div>
 
 <div class=card>
@@ -187,8 +188,10 @@ async function refresh(){
   }
 }
 // "Last capture" card. Text (speed/direction/age) comes from the newest /api/events
-// pass on every poll; the photo is fetched only when photoSeq changes, so the
-// hundreds-of-KB JPEG isn't re-pulled on every 4s /api/state refresh.
+// pass on every poll. The image always corresponds to THAT pass: shown only when
+// the newest pass has its own photo (photoSeq === lastSeq), otherwise a same-size
+// "no photo" placeholder -- never a stale image from an earlier pass. The JPEG is
+// fetched only when it changes, so it isn't re-pulled on every 4s /api/state poll.
 let shownPhotoSeq=-1;
 const ago=n=>n<5?'just now':n<60?n+'s ago':n<3600?Math.floor(n/60)+'m ago':Math.floor(n/3600)+'h ago';
 const dirTxt=d=>d==1?' • approaching':d==2?' • receding':'';
@@ -198,12 +201,14 @@ function updateLastCapture(s){
   txt('lastSpeed',s.lastSpeed);
   txt('lastUnit',s.lastKph?'KPH':'MPH');
   txt('lastMeta',ago(s.lastAgeSec)+dirTxt(s.lastDir));
-  const img=$('lastImg'),note=$('lastNote');
-  if(s.photoSeq){
-    if(s.photoSeq!==shownPhotoSeq){img.src='/api/last.jpg?seq='+s.photoSeq;img.style.display='block';shownPhotoSeq=s.photoSeq}
-    if(s.photoSeq<s.lastSeq){note.textContent='Newest pass was speed-only; photo is from an earlier pass.';note.style.display=''}
-    else{note.style.display='none'}
-  }else{img.style.display='none';img.removeAttribute('src');shownPhotoSeq=-1;note.style.display='none'}
+  const img=$('lastImg'),noimg=$('lastNoImg');
+  if(s.photoSeq && s.photoSeq===s.lastSeq){
+    if(s.photoSeq!==shownPhotoSeq){img.src='/api/last.jpg?seq='+s.photoSeq;shownPhotoSeq=s.photoSeq}
+    img.style.display='block';noimg.style.display='none';
+  }else{
+    img.style.display='none';img.removeAttribute('src');shownPhotoSeq=-1;
+    noimg.style.display='flex';
+  }
 }
 const csrf=(document.querySelector('meta[name=csrf]')||{}).content||'';
 const post=(p,b)=>fetch(p,{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify(b)});
