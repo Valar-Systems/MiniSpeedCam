@@ -67,6 +67,7 @@ static const unsigned long POST_BOOT_WIFI_GRACE_MS = 120000;
 
 #include "variables.h"
 #include "events.h"          // recent-detection ring served by GET /api/events (LAN companions)
+#include "last_photo.h"      // retained last-capture JPEG for the config portal (GET /api/last.jpg)
 #include "diagnostics.h"
 #include "camera.h"
 #include "camera_stream.h"
@@ -718,7 +719,14 @@ void taskCore1(void* parameter) {  // Code for task running on Core 1
         if (maxSpeed > 0) {
           // Record into the local ring served by GET /api/events, so a LAN companion
           // (e.g. the Blipscope "Speedscope" edition) can show recent speeds without the cloud.
-          eventsRecord(req.speed_actual, req.direction, req.peak_mag);
+          uint32_t ev_seq = eventsRecord(req.speed_actual, req.direction, req.peak_mag);
+          // Retain this pass's photo (if it took one) for the config portal's "Last capture"
+          // card. lastPhotoStage() makes its own PSRAM copy, so the buffer handed to Core 0
+          // via the queue below is still owned/freed by Core 0 as before. Tagged with ev_seq
+          // so the portal can tell whether the newest /api/events pass actually has an image.
+          if (photo_buf != nullptr) {
+            lastPhotoStage(photo_buf, photo_len, ev_seq, req.speed_actual, is_kph, req.direction);
+          }
           if (xQueueSend(uploadQueue, &req, 0) != pdTRUE) {
             Serial.println("[RUN] upload queue FULL, dropping event");
             if (photo_buf != nullptr) {

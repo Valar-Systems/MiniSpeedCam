@@ -80,6 +80,9 @@ button.warn{background:#3a2326;color:#f87171;border:1px solid #5b2a2e}
 .claim{text-align:center;color:var(--ok);font-weight:600;min-height:1.2em}
 .muted{color:var(--mut);font-size:12px;margin-top:6px;word-break:break-all}
 .stream{display:none;width:100%;max-width:320px;margin-top:10px;border-radius:8px;background:#000;aspect-ratio:4/3}
+.big .u{font-size:15px;font-weight:500;color:var(--mut);margin-left:4px}
+.cap{display:none;width:100%;border-radius:8px;margin-top:12px;background:#000;aspect-ratio:4/3;object-fit:contain}
+.noimg{display:none;width:100%;aspect-ratio:4/3;margin-top:12px;border-radius:8px;background:#0c0e12;border:1px dashed var(--bd);color:var(--mut);font-size:14px;align-items:center;justify-content:center;text-align:center}
 .toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--ok);color:#06210f;padding:10px 16px;border-radius:8px;font-weight:600;opacity:0;transition:opacity .2s;pointer-events:none}
 .toast.show{opacity:1}
 </style>
@@ -90,6 +93,14 @@ button.warn{background:#3a2326;color:#f87171;border:1px solid #5b2a2e}
 
 <div class=card>
 <div class=claim id=claim>&mdash;</div>
+</div>
+
+<div class=card id=lastCard style=display:none>
+<h2>Last capture</h2>
+<div class=big><span id=lastSpeed>&mdash;</span><span class=u id=lastUnit></span></div>
+<div class=muted id=lastMeta style=text-align:center>&mdash;</div>
+<img id=lastImg class=cap alt="last capture photo">
+<div id=lastNoImg class=noimg>No photo available</div>
 </div>
 
 <div class=card>
@@ -159,6 +170,7 @@ async function refresh(){
   txt('bootCount',s.bootCount);
   txt('fwVersion',s.fwVersion);
   txt('otaStatus',s.otaStatus);
+  updateLastCapture(s);
   syncStream(s.streamActive);
   if(!filled){
     $('isKph').checked=s.isKph;
@@ -173,6 +185,29 @@ async function refresh(){
     $('ssid').value=s.ssid;
     $('apiBase').value=s.apiBase;
     filled=true;
+  }
+}
+// "Last capture" card. Text (speed/direction/age) comes from the newest /api/events
+// pass on every poll. The image always corresponds to THAT pass: shown only when
+// the newest pass has its own photo (photoSeq === lastSeq), otherwise a same-size
+// "no photo" placeholder -- never a stale image from an earlier pass. The JPEG is
+// fetched only when it changes, so it isn't re-pulled on every 4s /api/state poll.
+let shownPhotoSeq=-1;
+const ago=n=>n<5?'just now':n<60?n+'s ago':n<3600?Math.floor(n/60)+'m ago':Math.floor(n/3600)+'h ago';
+const dirTxt=d=>d==1?' • approaching':d==2?' • receding':'';
+function updateLastCapture(s){
+  if(!s.lastSeq){$('lastCard').style.display='none';return}
+  $('lastCard').style.display='';
+  txt('lastSpeed',s.lastSpeed);
+  txt('lastUnit',s.lastKph?'KPH':'MPH');
+  txt('lastMeta',ago(s.lastAgeSec)+dirTxt(s.lastDir));
+  const img=$('lastImg'),noimg=$('lastNoImg');
+  if(s.photoSeq && s.photoSeq===s.lastSeq){
+    if(s.photoSeq!==shownPhotoSeq){img.src='/api/last.jpg?seq='+s.photoSeq;shownPhotoSeq=s.photoSeq}
+    img.style.display='block';noimg.style.display='none';
+  }else{
+    img.style.display='none';img.removeAttribute('src');shownPhotoSeq=-1;
+    noimg.style.display='flex';
   }
 }
 const csrf=(document.querySelector('meta[name=csrf]')||{}).content||'';
@@ -251,6 +286,30 @@ static void portalBuildState(String& out) {
   doc["claim"]       = device_claimed ? String("Linked to your account") : claim_code;
 
   doc["streamActive"] = (bool)stream_active;  // page embeds /stream inline on this same server
+
+  // --- last capture (top-of-page "Last capture" card) ---
+  // lastSeq/Speed/Dir/AgeSec describe the newest pass from the /api/events ring
+  // (every pass, photo or not). photoSeq is the seq of the pass whose JPEG we
+  // still hold in PSRAM (0 = none): the page shows the image when a photo exists
+  // and notes when photoSeq < lastSeq (newest pass was speed-only). Keeping the
+  // image on a separate seq lets the page refetch the ~hundreds-of-KB JPEG only
+  // when it actually changes, not on every 4 s /api/state poll.
+  {
+    int lastSpeed = 0; uint8_t lastDir = 0; bool lastKph = is_kph;
+    uint32_t lastSeq = 0, lastAge = 0;
+    if (eventsLatest(&lastSpeed, &lastDir, &lastKph, &lastSeq, &lastAge)) {
+      doc["lastSeq"]    = lastSeq;
+      doc["lastSpeed"]  = lastSpeed;
+      doc["lastKph"]    = lastKph;
+      doc["lastDir"]    = lastDir;      // 0 unknown, 1 approaching, 2 receding
+      doc["lastAgeSec"] = lastAge;
+    } else {
+      doc["lastSeq"] = 0;
+    }
+    uint32_t photoSeq = 0;
+    lastPhotoMeta(&photoSeq, nullptr, nullptr, nullptr, nullptr);  // leaves photoSeq 0 when none held
+    doc["photoSeq"] = photoSeq;
+  }
 
   // --- current settings (populate the form once, on first load) ---
   doc["isKph"]       = is_kph;
@@ -420,6 +479,41 @@ static esp_err_t portalEventsGet(httpd_req_t* req) {
   return httpd_resp_sendstr(req, out.c_str());
 }
 
+// GET /api/last.jpg -> the most recent capture's JPEG, held in PSRAM by
+// last_photo.h. The page shows it in the "Last capture" card. Like /api/state
+// this can disclose road/vehicle imagery, so it gets the same Host allowlist
+// (DNS-rebinding defense) but no CSRF -- it's a read, and the page must be able
+// to load it in an <img> (which can't set custom headers). Sent chunked so the
+// hundreds-of-KB frame never needs a contiguous send buffer, and via the
+// borrow/release protocol so a fresh capture mid-send can't free it underfoot.
+static esp_err_t portalLastPhotoGet(httpd_req_t* req) {
+  if (!portalHostAllowed(req)) {
+    httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "bad host");
+    return ESP_FAIL;
+  }
+  size_t len = 0;
+  const uint8_t* buf = lastPhotoBorrow(&len);
+  if (buf == nullptr) {
+    httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "no capture yet");
+    return ESP_FAIL;
+  }
+  httpd_resp_set_type(req, "image/jpeg");
+  // Immutable per seq: the page appends ?seq=N and only refetches when N changes,
+  // so let the browser cache a given frame hard and skip re-downloading it.
+  httpd_resp_set_hdr(req, "Cache-Control", "private, max-age=31536000, immutable");
+  // Chunk the JPEG so we never allocate a second full-frame contiguous buffer.
+  esp_err_t rc = ESP_OK;
+  const size_t CHUNK = 8192;
+  for (size_t off = 0; off < len; off += CHUNK) {
+    const size_t n = (len - off < CHUNK) ? (len - off) : CHUNK;
+    if (httpd_resp_send_chunk(req, (const char*)buf + off, n) != ESP_OK) { rc = ESP_FAIL; break; }
+  }
+  lastPhotoRelease();                       // release BEFORE the terminating chunk; the buffer is no longer read
+  if (rc == ESP_OK) httpd_resp_send_chunk(req, nullptr, 0);   // end of chunked response
+  // On failure we skip the terminator and return ESP_FAIL, so httpd closes the socket.
+  return rc;
+}
+
 // POST /api/settings -> device settings; written to globals + NVS, applied live
 // (no reboot). Each field falls back to its current value if absent/malformed.
 static esp_err_t portalSettingsPost(httpd_req_t* req) {
@@ -587,9 +681,9 @@ void load_config_portal(void) {
   // /api/state polls; the old separate :81 stream server is gone (its sockets
   // freed), so this single server can afford more open sockets.
   config.max_open_sockets = 7;
-  config.max_uri_handlers = 12;   // 9 registered (/, /api/state, /api/events, /api/settings,
-                                  // /api/wifi, /api/clear, /api/stream, /api/ota/check, GET /stream)
-                                  // plus a little headroom
+  config.max_uri_handlers = 12;   // 10 registered (/, /api/state, /api/events, /api/last.jpg,
+                                  // /api/settings, /api/wifi, /api/clear, /api/stream,
+                                  // /api/ota/check, GET /stream) plus a little headroom
   config.lru_purge_enable = true;
   config.stack_size       = 8192;   // headroom for ArduinoJson + String building
   // Cap a single blocking recv so a stalled client can't pin the worker for the
@@ -605,6 +699,7 @@ void load_config_portal(void) {
   httpd_uri_t u_root   = { .uri = "/",             .method = HTTP_GET,  .handler = portalRootGet,      .user_ctx = NULL };
   httpd_uri_t u_state  = { .uri = "/api/state",    .method = HTTP_GET,  .handler = portalStateGet,     .user_ctx = NULL };
   httpd_uri_t u_events = { .uri = "/api/events",   .method = HTTP_GET,  .handler = portalEventsGet,    .user_ctx = NULL };
+  httpd_uri_t u_photo  = { .uri = "/api/last.jpg", .method = HTTP_GET,  .handler = portalLastPhotoGet, .user_ctx = NULL };
   httpd_uri_t u_set    = { .uri = "/api/settings", .method = HTTP_POST, .handler = portalSettingsPost, .user_ctx = NULL };
   httpd_uri_t u_wifi   = { .uri = "/api/wifi",     .method = HTTP_POST, .handler = portalWifiPost,     .user_ctx = NULL };
   httpd_uri_t u_clear  = { .uri = "/api/clear",    .method = HTTP_POST, .handler = portalClearPost,    .user_ctx = NULL };
@@ -613,6 +708,7 @@ void load_config_portal(void) {
   httpd_register_uri_handler(config_httpd, &u_root);
   httpd_register_uri_handler(config_httpd, &u_state);
   httpd_register_uri_handler(config_httpd, &u_events);
+  httpd_register_uri_handler(config_httpd, &u_photo);
   httpd_register_uri_handler(config_httpd, &u_set);
   httpd_register_uri_handler(config_httpd, &u_wifi);
   httpd_register_uri_handler(config_httpd, &u_clear);
