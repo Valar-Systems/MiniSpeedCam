@@ -25,6 +25,24 @@ int photo_speed;             // Speed threshold within a run that triggers a pho
 bool is_kph;                 // true = KPH units, false = MPH (persisted in NVS)
 int maxSpeed;                // Highest speed observed during the current tracking run
 
+// Installation cosine correction (persisted in NVS, key "speed_corr").
+// Doppler reads only the radial component: v_read = v_true * cos(theta),
+// where theta is the angle between the radar beam and the car's travel. A
+// unit aimed along the road from a lateral offset therefore reads slightly
+// LOW by a factor that is fixed for a given mounting -- e.g. a house-corner
+// mount 10.5 m off the centerline, measuring 50-70 m up-street, sits at
+// 8.6-12 deg off-axis and reads 1.1-2.2% low, so one constant (~1.016)
+// corrects it to within +/-0.6%. Applied on the ESP32 (in get_speed(), in
+// the float domain before the int truncation) so the STM32 keeps reporting
+// the untouched physics measurement for bench validation. It multiplies
+// every sample BEFORE the min_speed / photo_speed comparisons, so users set
+// thresholds in true road speed. Clamped to [1.00, 1.30]: cosine error can
+// only make the radar read low, never high, and 1.30 corresponds to ~40 deg
+// off-axis -- beyond that the angle changes too much across the measurement
+// zone for any single constant to be honest, and the fix is re-aiming the
+// unit along the road, not math.
+float speed_correction;      // 1.0 = off (default); set from the config portal
+
 // Proximity gate (persisted in NVS). The STM32 reports the FFT peak magnitude
 // alongside each speed; magnitude tracks received power (~1/r^4), so a distant
 // car reads weak while a car on the road reads strong. A run only arms when the
@@ -47,10 +65,26 @@ volatile uint16_t g_last_peak_snr;  // FFT peak SNR x10 from the most recent get
 volatile uint32_t g_reject_speed;
 volatile uint32_t g_reject_proximity;
 
+// Consecutive get_speed() polls that got NO reply at all from the STM32 -- a
+// dead/mute radar link (crash or mid-failed reflash), distinct from a valid
+// "no target" reply which still arrives as a checksummed 0-speed line. Reset to
+// 0 on any received line. The power-saver paths read this (via stmLinkDead() in
+// radar.h) so they don't drop WiFi while the radar is dead -- keeping the portal
+// and OTA reachable so the STM can be reflashed instead of the device stranding.
+volatile uint32_t g_stm_no_reply_streak = 0;
+
 // STM32 firmware version, queried over UART at boot (the 'v' command). Stays
 // "unknown" on older STM32 firmware that predates 'v'. Reported in the
 // heartbeat so the cloud can tell whether the STM32 needs reflashing.
-String stm_fw_version = "unknown";
+//
+// A fixed char[] rather than a String on purpose: this value is rewritten on
+// taskCore0 after an STM auto-flash while the httpd task may be reading it to
+// build /api/state (firmwareVersionText()). A String reassignment frees its old
+// heap buffer, which is a use-after-free for that concurrent reader; a fixed
+// buffer is only ever overwritten in place, so the worst case is a harmless
+// torn read, never a freed-pointer dereference. Sized to hold the 'v' reply
+// (radar.h reads at most a 23-char version before NUL).
+char stm_fw_version[24] = "unknown";
 
 // Power-Saver Mode (persisted in NVS). When true the radar loop drops WiFi
 // during the idle/sleep windows to save power; when false the device never
@@ -87,11 +121,13 @@ volatile unsigned long stream_deadline; // millis() at which the stream auto-sto
 // --- Core 1 -> Core 0 upload handoff ---
 // One tracking run produces one UploadRequest, posted to uploadQueue when the
 // run ends (so speed_actual is final). Core 0 blocks on the queue instead of
-// polling flags, and owns `fb`: it must esp_camera_fb_return(fb) after sending.
+// polling flags, and owns `photo_buf`: it must free(photo_buf) after sending.
 struct UploadRequest {
   int speed_actual;   // Final max speed for the run, in the configured units
-  bool has_photo;     // true if fb holds a captured JPEG to upload
-  camera_fb_t* fb;    // PSRAM framebuffer to stream (nullptr when has_photo is false)
+  bool has_photo;     // true if photo_buf holds a captured JPEG to upload
+  uint8_t* photo_buf; // ps_malloc'd JPEG copy to stream (nullptr when no photo). Core 0 free()s it after
+  size_t   photo_len; // byte length of photo_buf. Decoupled from the camera driver's fb pool so a slow
+                      // upload can never hold a framebuffer and block a later capturePhoto() on Core 1.
 
   // --- Per-event telemetry (forwarded to the cloud by sendUpload) ---
   // Captured over the whole pass so each reading carries its own context.

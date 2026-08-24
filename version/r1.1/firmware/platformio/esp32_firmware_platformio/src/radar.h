@@ -33,13 +33,23 @@ void issue_cdm324_reset(void);
 // covers real road speeds in both MPH and KPH while rejecting noise.
 static const float MAX_PLAUSIBLE_SPEED = 250.0f;
 
+// A get_speed() streak this long with no STM reply at all means the radar MCU
+// has gone mute (crashed, or sitting in a mid-failed reflash) -- distinct from
+// "no car," which still arrives as a checksummed 0-speed line. The power-saver
+// sleep paths check stmLinkDead() and keep WiFi up while it holds, so the STM
+// can be reflashed over the air instead of the device stranding offline.
+static const uint32_t STM_DEAD_STREAK = 30;   // ~3s at the ~100ms poll cadence
+static inline bool stmLinkDead(void) { return g_stm_no_reply_streak >= STM_DEAD_STREAK; }
+
 /**
  * Query the STM32 for the most recent speed sample.
  *
  * @param kmh  true = request KPH, false = request MPH.
- * @return     Speed in the requested units. Returns 0 if the STM32 did
- *             not have data ready, or if the reading was implausible
- *             (negative / above MAX_PLAUSIBLE_SPEED) and treated as noise.
+ * @return     Speed in the requested units, multiplied by speed_correction
+ *             (the installation cosine factor; see variables.h). Returns 0
+ *             if the STM32 did not have data ready, or if the raw reading
+ *             was implausible (negative / above MAX_PLAUSIBLE_SPEED) and
+ *             treated as noise.
  */
 float get_speed(bool kmh) {
   // Clear the proximity + SNR readings up front: every early-return below (no
@@ -86,8 +96,10 @@ float get_speed(bool kmh) {
 
   if (!got_line) {
     Serial.println("NO DATA");
+    g_stm_no_reply_streak++;  // STM mute -> dead-link signal (not "no target")
     return 0;  // nothing complete arrived; report no motion rather than stale
   }
+  g_stm_no_reply_streak = 0;  // a line arrived (even a bad-checksum one) -> link alive
 
   // Split "<value>*<CK>" and verify the checksum (XOR of the value's ASCII
   // digits). A mismatch means the line was corrupted in transit — reject it.
@@ -144,7 +156,11 @@ float get_speed(bool kmh) {
     }
   }
 
-  return speed;
+  // Apply the installation cosine correction (see variables.h) in the float
+  // domain, after the raw-value plausibility check above -- the ceiling always
+  // judges the physics measurement, never the corrected one -- and before the
+  // caller truncates to int, so the correction isn't quantized away.
+  return speed * speed_correction;
 }
 
 /**
@@ -175,7 +191,22 @@ String get_stm32_version() {
 
   // Expect "V<version>"; anything else (noise, a stray speed reply) -> unknown.
   if (got_line && line[0] == 'V' && idx > 1) {
-    return String(line + 1);
+    // Newer STM firmware appends the same XOR checksum the speed replies use:
+    // "V<ver>*<CK>", the checksum taken over the "V<ver>" payload. Verify it when
+    // present so a corrupted version can't drive a wrong OTA decision; older
+    // firmware sends a bare "V<ver>" (no '*'), which we still accept.
+    char* vstar = strchr(line, '*');
+    if (vstar != nullptr) {
+      *vstar = '\0';  // terminate the "V<ver>" payload; vstar+1 is the checksum hex
+      uint8_t rx_ck = (uint8_t)strtol(vstar + 1, nullptr, 16);
+      uint8_t calc_ck = 0;
+      for (const char* p = line; *p != '\0'; p++) calc_ck ^= (uint8_t)*p;
+      if (calc_ck != rx_ck) {
+        Serial.printf("[RADAR] 'v' checksum fail: \"%s*%s\"\n", line, vstar + 1);
+        return String("unknown");
+      }
+    }
+    return String(line + 1);  // "<ver>"
   }
   return String("unknown");
 }

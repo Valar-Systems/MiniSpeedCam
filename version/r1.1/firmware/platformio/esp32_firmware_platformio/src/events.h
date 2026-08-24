@@ -12,74 +12,104 @@
  * different cores, so a short portMUX critical section guards the shared indices while the
  * ring is snapshotted; the JSON is then built outside the lock (it allocates).
  *
- * This device has no NTP/RTC (see diagnostics.h -- only millis() is available), so each
- * event carries `ageSec` (seconds since the pass, from millis()) rather than a wall-clock
- * epoch; a companion with its own synced clock turns that into an absolute time. Speeds are
- * whole numbers in the device's configured unit -- the top-level `kph` flag says which.
+ * Payload contract (all fields additive/back-compatible):
+ *   {
+ *     "kph": false,          // the device's CURRENT unit setting (is_kph)
+ *     "count": 3,            // number of events in the ring (<= SPEED_EVENTS_CAP)
+ *     "latestSeq": 42,       // seq of the newest event (0 = none); poll this to spot new/missed passes
+ *     "events": [            // newest first
+ *       {"seq":42,"speed":31,"kph":false,"ageSec":4,"mag":1200,"dir":1}, ...
+ *     ]
+ *   }
+ * Three properties make the feed safe for a stateful companion:
+ *   - Per-record "kph": the unit is captured AT RECORD TIME, so changing the device's
+ *     units setting later never relabels earlier passes (the top-level "kph" is only the
+ *     current setting). Each record's speed is authoritative under its own "kph".
+ *   - Monotonic "seq": a unique, ever-increasing id per pass. A companion polling the feed
+ *     uses it to dedupe and to detect passes it missed when the 32-entry ring wrapped
+ *     between polls (a gap in seq, or latestSeq jumping by more than it received).
+ *   - 64-bit age clock: this device has no NTP/RTC (see diagnostics.h), so each event
+ *     carries "ageSec" (seconds since the pass) rather than a wall-clock epoch. The source
+ *     is esp_timer_get_time() (int64 microseconds since boot), NOT millis() -- millis()
+ *     wraps every 49.7 days, which would corrupt the age of any entry older than that on a
+ *     long-lived roadside device. A companion with its own synced clock turns ageSec into
+ *     an absolute time. Speeds are whole numbers in each record's unit.
  *
- * Include order (main.cpp): after variables.h (uses `is_kph` + millis()) and before
- * config_portal.h (which calls eventsBuildJson from its /api/events handler).
+ * Include order (main.cpp): after variables.h (uses `is_kph`) and before config_portal.h
+ * (which calls eventsBuildJson from its /api/events handler).
  */
 #pragma once
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <esp_timer.h>   // esp_timer_get_time(): 64-bit us clock (millis() wraps at 49.7d)
 #include <string.h>
 
 struct SpeedEventRec {
-  int      speed;   // run max speed, device units (mph or kph per is_kph)
+  int      speed;   // run max speed, in the unit given by `kph` below
   uint8_t  dir;     // 0 = unknown, 1 = approaching (front), 2 = receding (rear)
+  uint8_t  kph;     // unit of `speed` AT RECORD TIME (1 = kph, 0 = mph)
   uint16_t mag;     // strongest FFT peak magnitude of the run (proximity/confidence proxy)
-  uint32_t at_ms;   // millis() at capture (for a device-relative age)
+  uint32_t seq;     // monotonic id, unique per pass (companion dedupe / gap detection)
+  int64_t  at_us;   // esp_timer_get_time() at capture; 64-bit so age never wraps
 };
 
 static const int SPEED_EVENTS_CAP = 32;            // last N passes retained
 static SpeedEventRec g_speed_events[SPEED_EVENTS_CAP];
-// head/count aren't volatile: every access is inside the g_speed_events_mux critical section below,
-// which provides the cross-core ordering (a spinlock + interrupt disable), so plain ints are correct.
+// head/count/seq aren't volatile: every access is inside the g_speed_events_mux critical section
+// below, which provides the cross-core ordering (a spinlock + interrupt disable), so plain ints
+// are correct.
 static int           g_speed_events_head  = 0;     // next slot to write
 static int           g_speed_events_count = 0;     // valid entries (<= CAP)
+static uint32_t      g_speed_events_seq   = 0;     // last assigned seq (0 = no events yet)
 static portMUX_TYPE  g_speed_events_mux   = portMUX_INITIALIZER_UNLOCKED;
 
 // Radar task (Core 1): record one finished run. Called for every pass (speed-only or with
 // a photo), so the companion sees the same events the cloud does. Cheap + non-blocking.
 static void eventsRecord(int speed, uint8_t dir, uint16_t mag) {
+  const int64_t now_us = esp_timer_get_time();   // read the clock outside the lock (no allocation)
   portENTER_CRITICAL(&g_speed_events_mux);
   SpeedEventRec& e = g_speed_events[g_speed_events_head];
   e.speed = speed;
   e.dir   = dir;
+  e.kph   = is_kph ? 1 : 0;        // capture the unit now; a later units change won't relabel this pass
   e.mag   = mag;
-  e.at_ms = millis();
+  e.seq   = ++g_speed_events_seq;   // 1-based monotonic id (first pass is seq 1)
+  e.at_us = now_us;
   g_speed_events_head = (g_speed_events_head + 1) % SPEED_EVENTS_CAP;
   if (g_speed_events_count < SPEED_EVENTS_CAP) g_speed_events_count++;
   portEXIT_CRITICAL(&g_speed_events_mux);
 }
 
-// httpd task: serialize the ring newest-first into `out`:
-//   {"kph":false,"count":3,"events":[{"speed":31,"ageSec":4,"mag":1200,"dir":1}, ...]}
+// httpd task: serialize the ring newest-first into `out` (see the payload contract above).
 static void eventsBuildJson(String& out) {
   // Snapshot the whole physical ring + indices under the lock (a fixed 32-entry copy, a few
   // hundred bytes on the stack), then release it before building/allocating the JSON.
   SpeedEventRec snap[SPEED_EVENTS_CAP];
   int count, head;
-  const uint32_t now = millis();
+  uint32_t latest_seq;
+  const int64_t now_us = esp_timer_get_time();
   portENTER_CRITICAL(&g_speed_events_mux);
-  count = g_speed_events_count;
-  head  = g_speed_events_head;
+  count      = g_speed_events_count;
+  head       = g_speed_events_head;
+  latest_seq = g_speed_events_seq;
   memcpy(snap, g_speed_events, sizeof(snap));
   portEXIT_CRITICAL(&g_speed_events_mux);
 
   JsonDocument doc;
-  doc["kph"]   = is_kph;   // defined in variables.h (same translation unit)
-  doc["count"] = count;
+  doc["kph"]       = is_kph;      // current device setting; per-record "kph" is authoritative per pass
+  doc["count"]     = count;
+  doc["latestSeq"] = latest_seq;  // 0 = no events yet
   JsonArray arr = doc["events"].to<JsonArray>();
   for (int i = 0; i < count; i++) {
     // newest first: step back from the write head, wrapping into the valid region.
     const int idx = ((head - 1 - i) % SPEED_EVENTS_CAP + SPEED_EVENTS_CAP) % SPEED_EVENTS_CAP;
     const SpeedEventRec& e = snap[idx];
     JsonObject o = arr.add<JsonObject>();
+    o["seq"]    = e.seq;
     o["speed"]  = e.speed;
-    o["ageSec"] = (int)((now - e.at_ms) / 1000UL);
+    o["kph"]    = (bool)e.kph;   // unit of THIS record (may differ from the top-level current setting)
+    o["ageSec"] = (long)((now_us - e.at_us) / 1000000LL);  // 64-bit math: never wraps
     o["mag"]    = e.mag;
     o["dir"]    = e.dir;
   }

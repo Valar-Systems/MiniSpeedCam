@@ -31,6 +31,9 @@ static int stmBlReadByte(uint32_t timeout_ms) {
   uint32_t start = millis();
   while ((millis() - start) < timeout_ms) {
     if (Serial1.available()) return (uint8_t)Serial1.read();
+    delay(1);  // yield: bootloader waits (mass-erase/write ACKs) can run seconds; a
+               // bare spin would starve IDLE0 and trip the task watchdog. Costs <=1ms
+               // of reply latency, negligible against the multi-second flash.
   }
   return -1;
 }
